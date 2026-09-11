@@ -369,13 +369,28 @@ export class SignalBridge {
     this._lastFocused = null;
     this._dwellUsed = false;
 
-    // The dwell engine drives progress and activation for continuous sources.
-    this.dwell.onProgress = (id, ratio) => this.onProgress?.(id, ratio);
+    // The bridge must CHAIN onto the dwell engine's callbacks, not replace
+    // them: a host that configured the engine directly (a progress painter, a
+    // logger) would otherwise have its handlers silently discarded the moment
+    // a bridge was attached. Caught live — the demo's dwell ring never
+    // painted because this constructor clobbered the engine's onProgress.
+    const prevProgress = this.dwell.onProgress;
+    const prevActivate = this.dwell.onActivate;
+    const prevCancel = this.dwell.onCancel;
+
+    this.dwell.onProgress = (id, ratio) => {
+      prevProgress?.(id, ratio);
+      this.onProgress?.(id, ratio);
+    };
     this.dwell.onActivate = (id, meta) => {
       this._dwellUsed = true;
+      prevActivate?.(id, meta);
       this.onActivate?.(id, { ...meta, via: 'dwell' });
     };
-    this.dwell.onCancel = (id, meta) => this.onCancel?.(id, meta);
+    this.dwell.onCancel = (id, meta) => {
+      prevCancel?.(id, meta);
+      this.onCancel?.(id, meta);
+    };
 
     this._wireSource();
   }

@@ -126,3 +126,41 @@ test('a direct source that also reports focus does not dwell', () => {
   assert.equal(events.length, 1);
   assert.equal(events[0].via, 'direct');
 });
+
+test('the bridge chains onto engine callbacks instead of clobbering them', () => {
+  // Regression: the bridge used to OVERWRITE dwell.onProgress/onActivate,
+  // silently discarding any handler the host had configured. That shipped a
+  // dwell ring that never painted.
+  const hostProgress = [];
+  const bridgeProgress = [];
+  const src = new ExternalSource();
+  const dwell = new DwellEngine({
+    dwellMs: 1000,
+    onProgress: (id, ratio) => hostProgress.push(ratio),
+  });
+  new SignalBridge({
+    source: src,
+    dwell,
+    mode: 'dwell',
+    onProgress: (id, ratio) => bridgeProgress.push(ratio),
+  });
+  src.start();
+  src.focus('w1', 0);
+  dwell.hold(400);
+  assert.ok(hostProgress.length > 0, 'the host handler must still fire');
+  assert.ok(bridgeProgress.length > 0, 'the bridge handler must also fire');
+});
+
+test('the bridge chains onto engine cancel handlers too', () => {
+  const hostCancels = [];
+  const src = new ExternalSource();
+  const dwell = new DwellEngine({
+    dwellMs: 1000,
+    onCancel: (id) => hostCancels.push(id),
+  });
+  new SignalBridge({ source: src, dwell });
+  src.start();
+  dwell.enter('w9', 0);
+  dwell.cancel('escape');
+  assert.deepEqual(hostCancels, ['w9'], 'host cancel handler must survive the bridge');
+});

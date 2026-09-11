@@ -130,7 +130,7 @@ The point is that nothing above this layer needs to know which one you used.</p>
 </div>
 
 <script type="module">
-import { DwellEngine, SignalBridge, PointerSource, SwitchSource, KeyboardSource, ExternalSource }
+import { DwellEngine, SignalBridge, PointerSource, SwitchSource, KeyboardSource, tagWords }
   from '../src/index.js';
 
 const logEl = document.getElementById('log');
@@ -146,14 +146,44 @@ const log = (msg) => {
 
 let dwell = null, bridge = null, source = null, mode = 'pointer';
 
+/**
+ * Make every word in the reading surface addressable. Done ONCE, before any
+ * source is wired — the input layer addresses whatever carries
+ * [data-dwell-target], so tagging is the only content-specific step and the
+ * sources stay ignorant of what a "word" is.
+ */
+const readingEl = document.getElementById('reading');
+tagWords(readingEl);
+
 function targets() {
   return document.querySelectorAll('[data-dwell-target]');
 }
 
 function activate(id, meta) {
   log(`ACTIVATE ${id} (via ${meta.via})`);
+  clearProgress(id);
   if (meta.via === 'dwell') flash(id);
   if (mode !== 'keyboard') speakLabel(id);
+}
+
+/**
+ * Clear a target's dwell fill. Without this the ring STAYS where it stopped —
+ * every word the pointer crosses keeps its last progress value, and the page
+ * slowly fills with amber leftovers. Caught by looking at a screenshot, not by
+ * any test: the state was correct, the PAINT was stale.
+ */
+function clearProgress(id) {
+  const el = document.querySelector(`[data-dwell-target="${id}"]`);
+  if (el) el.style.removeProperty('--dwell-progress');
+}
+
+/** Clear every painted ring — used when focus moves on. */
+function clearAllProgress(exceptId) {
+  for (const el of document.querySelectorAll('[data-dwell-target]')) {
+    if (el.getAttribute('data-dwell-target') !== exceptId) {
+      el.style.removeProperty('--dwell-progress');
+    }
+  }
 }
 
 function flash(id) {
@@ -188,6 +218,8 @@ function rebuild() {
       const el = document.querySelector(`[data-dwell-target="${id}"]`);
       if (el) el.style.setProperty('--dwell-progress', String(r));
     },
+    onActivate: (id) => clearProgress(id),
+    onCancel: (id) => clearProgress(id),
     onActivate: () => {},
     onAdapt: (ms, meta) => log(`ADAPT dwell ${meta.from}ms → ${ms}ms`),
   });
@@ -198,6 +230,8 @@ function rebuild() {
       document.querySelectorAll('[data-dwell-focus]')
         .forEach((e) => e.removeAttribute('data-dwell-focus'));
       if (id) document.querySelector(`[data-dwell-target="${id}"]`)?.setAttribute('data-dwell-focus', '');
+      // Focus moving on means the previous target's fill is stale.
+      clearAllProgress(id);
     },
   };
 

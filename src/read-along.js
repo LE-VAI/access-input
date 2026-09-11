@@ -19,12 +19,13 @@
  *   });
  *   await host.start();
  *
- * The adapter tags every word in the element with data-dwell-target so the
- * existing sources work unchanged — no source needs to know what a "word" is.
+ * Word tagging is delegated to ../words.js so the same addressability works on
+ * any content, not just a read-along element.
  */
 
 import { DwellEngine } from './dwell.js';
 import { SignalBridge } from './sources.js';
+import { tagWords, TARGET_ATTR, WORD_CLASS } from './words.js';
 
 /** Default dwell for word-by-word reading: shorter than a control, because
  *  reading is a flow activity and every word should not cost a second. */
@@ -37,16 +38,18 @@ export class ReadAlongInputHost {
    * @param {import('./sources.js').InputSource} options.source
    * @param {number} [options.dwellMs]
    * @param {boolean} [options.adaptive]
+   * @param {Function} [options.onActivate] (tokenIndex, meta) — override the
+   *   default seek behaviour (e.g. to log, or to drive something else)
    */
   constructor(el, options = {}) {
     this.el = el;
     this.source = options.source;
-    this._tagged = false;
+    this.onActivateHook = options.onActivate || null;
+    this._words = null;
 
     this.dwell = new DwellEngine({
       dwellMs: options.dwellMs ?? READING_DWELL_MS,
       adaptive: options.adaptive !== false,
-      onProgress: (id, ratio) => this._paintProgress(id, ratio),
       onAdapt: options.onAdapt || null,
     });
 
@@ -56,6 +59,7 @@ export class ReadAlongInputHost {
       onActivate: (id, meta) => this._activate(id, meta),
       onFocus: (id) => this._paintFocus(id),
       onProgress: (id, ratio) => this._paintProgress(id, ratio),
+      onCancel: options.onCancel || null,
     });
   }
 
@@ -72,86 +76,38 @@ export class ReadAlongInputHost {
     this._clearPaint();
   }
 
-  /**
-   * Tag each word as a dwell target. read-along tokenizes internally, so the
-   * adapter does the same whitespace split to produce stable ids — and keeps
-   * the mapping so an activation can be translated back to a token index.
-   */
+  /** Tag words as dwell targets, keeping the mapping back to token indexes. */
   _tag() {
-    if (this._tagged) return;
-    const text = this.el.textContent || '';
-    const words = [];
-    const re = /\S+/g;
-    let m;
-    while ((m = re.exec(text)) !== null) {
-      words.push({ text: m[0], start: m.index, end: m.index + m[0].length });
-    }
-    this._words = words;
-    // Wrap each word so it can carry an attribute and be hit-tested. This is
-    // display-preserving: the spans are inline and unstyled, and read-along
-    // tokenizes the same text content, so offsets are unchanged.
-    if (!words.length) return;
-    this._wrapWords(words);
-    this._tagged = true;
+    if (this._words) return;
+    this._words = tagWords(this.el);
   }
 
-  _wrapWords(words) {
-    // Walk text nodes and wrap in place, right-to-left so earlier offsets
-    // stay valid while mutating.
-    const walker = document.createTreeWalker(this.el, NodeFilter.SHOW_TEXT);
-    const nodes = [];
-    let n;
-    while ((n = walker.nextNode()) !== null) nodes.push(n);
-
-    let offset = 0;
-    for (const node of nodes) {
-      const nodeStart = offset;
-      offset += node.data.length;
-      // Words fully inside this node get wrapped.
-      const inside = words.filter(
-        (w) => w.start >= nodeStart && w.end <= nodeStart + node.data.length
-      );
-      if (!inside.length) continue;
-      const frag = document.createDocumentFragment();
-      let cursor = 0;
-      for (const w of inside) {
-        const localStart = w.start - nodeStart;
-        const localEnd = w.end - nodeStart;
-        if (localStart > cursor) {
-          frag.appendChild(document.createTextNode(node.data.slice(cursor, localStart)));
-        }
-        const span = document.createElement('span');
-        span.textContent = node.data.slice(localStart, localEnd);
-        span.setAttribute('data-dwell-target', `w${words.indexOf(w)}`);
-        span.className = 'ra-dwell-word';
-        frag.appendChild(span);
-        cursor = localEnd;
-      }
-      if (cursor < node.data.length) {
-        frag.appendChild(document.createTextNode(node.data.slice(cursor)));
-      }
-      node.parentNode.replaceChild(frag, node);
-    }
-  }
-
-  _activate(targetId) {
+  _activate(targetId, meta) {
     const i = this._indexOf(targetId);
     if (i < 0) return;
-    // Word-level seek is the read-along API; fall back to a plain play when
-    // the element predates seek support.
-    if (typeof this.el.seekToToken === 'function' && this.el.state === 'playing') {
+    const detail = { token: i, word: this._words[i]?.text, via: meta?.via };
+
+    if (this.onActivateHook) {
+      this.onActivateHook(i, detail);
+    } else {
+      this._seek(i);
+    }
+
+    this._clearPaint();
+    this.el.dispatchEvent(
+      new CustomEvent('dwell-activate', { bubbles: true, detail })
+    );
+  }
+
+  /** Default behaviour: read from the chosen word. */
+  _seek(i) {
+    if (typeof this.el.seekToToken !== 'function') return;
+    if (this.el.state === 'playing') {
       this.el.seekToToken(i);
     } else if (typeof this.el.play === 'function') {
       this.el.play();
-      if (typeof this.el.seekToToken === 'function') this.el.seekToToken(i);
+      this.el.seekToToken(i);
     }
-    this._clearPaint();
-    this.el.dispatchEvent(
-      new CustomEvent('dwell-activate', {
-        bubbles: true,
-        detail: { token: i, word: this._words[i]?.text },
-      })
-    );
   }
 
   _indexOf(targetId) {
@@ -162,18 +118,25 @@ export class ReadAlongInputHost {
   _paintFocus(targetId) {
     this._clearPaint();
     if (targetId === null) return;
-    const el = this._el(targetId);
-    if (el) el.setAttribute('data-dwell-focus', '');
+    this._el(targetId)?.setAttribute('data-dwell-focus', '');
   }
 
   _paintProgress(targetId, ratio) {
     const el = this._el(targetId);
-    if (el) el.style.setProperty('--dwell-progress', String(ratio));
+    if (!el) return;
+    if (ratio >= 1) {
+      // A completed dwell must not leave its fill painted — the activation
+      // flash takes over from here. Without this the word keeps a full amber
+      // ring after it has already been read.
+      el.style.removeProperty('--dwell-progress');
+      return;
+    }
+    el.style.setProperty('--dwell-progress', String(ratio));
   }
 
   _el(targetId) {
     if (!this.el.querySelector) return null;
-    return this.el.querySelector(`[data-dwell-target="${targetId}"]`);
+    return this.el.querySelector(`[${TARGET_ATTR}="${targetId}"]`);
   }
 
   _clearPaint() {
@@ -181,7 +144,7 @@ export class ReadAlongInputHost {
     for (const el of this.el.querySelectorAll('[data-dwell-focus]')) {
       el.removeAttribute('data-dwell-focus');
     }
-    for (const el of this.el.querySelectorAll('.ra-dwell-word')) {
+    for (const el of this.el.querySelectorAll(`.${WORD_CLASS}`)) {
       el.style.removeProperty('--dwell-progress');
     }
   }

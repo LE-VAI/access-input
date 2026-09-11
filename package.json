@@ -8,7 +8,8 @@
     ".": "./src/index.js",
     "./dwell.js": "./src/dwell.js",
     "./sources.js": "./src/sources.js",
-    "./read-along.js": "./src/read-along.js"
+    "./read-along.js": "./src/read-along.js",
+    "./words.js": "./src/words.js"
   },
   "files": [
     "src",
@@ -16,7 +17,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test tests/dwell.test.mjs tests/sources.test.mjs"
+    "test": "node --test tests/dwell.test.mjs tests/sources.test.mjs tests/words.test.mjs"
   },
   "keywords": [
     "accessibility",
