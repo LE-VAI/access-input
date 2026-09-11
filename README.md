@@ -4,10 +4,16 @@
 
 Zero dependencies. MIT. Runs in the browser, testable in Node.
 
+**[Try the live demo →](https://le-vai.github.io/access-input/demo/)**
+
+```bash
+npm install access-input
+```
+
 ```js
 import { DwellEngine, SignalBridge, SwitchSource } from 'access-input';
 
-const dwell = new DwellEngine({ dwellMs: 700 });
+const dwell = new DwellEngine({ dwellMs: 600 });
 const source = new SwitchSource({ keys: [' '], autoScan: true });
 new SignalBridge({ source, dwell, mode: 'direct', onActivate: (id) => choose(id) });
 ```

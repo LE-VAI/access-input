@@ -1,0 +1,19 @@
+# Dependencies (this package has none, but consumers may install them)
+node_modules/
+
+# Build output
+dist/
+*.tgz
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Logs and local scratch
+*.log
+npm-debug.log*
+.cache/
+tmp/

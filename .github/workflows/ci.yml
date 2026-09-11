@@ -1,0 +1,77 @@
+name: CI
+
+# The test suite is the acceptance gate for this package. It runs on every
+# push and PR across the Node versions the package claims to support
+# (engines: >=18), so a breaking change is caught before it reaches npm.
+#
+# No install step is needed — the package has zero dependencies and the
+# tests use node:test from the standard library.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Test (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['18', '20', '22']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Run the test suite
+        run: npm test
+
+      - name: Verify every source file parses
+        run: |
+          for f in src/*.js; do
+            node --check "$f" || exit 1
+          done
+          echo "all source files parse"
+
+  syntax:
+    name: Syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check every module parses
+        run: |
+          for f in src/*.js tests/*.mjs; do
+            node --check "$f" || exit 1
+          done
+          echo "all modules parse"
+
+  demo:
+    name: Demo loads
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Serve the demo and fetch every module it imports
+        run: |
+          python3 -m http.server 8795 --bind 127.0.0.1 &
+          sleep 2
+          # The demo page and each module it loads must be reachable, or the
+          # live demo link in the README is broken for visitors.
+          for path in /demo/ /src/index.js /src/dwell.js /src/sources.js /src/words.js /src/read-along.js; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:8795$path")
+            echo "$path -> $code"
+            [ "$code" = "200" ] || exit 1
+          done
+          echo "demo and all modules load"
