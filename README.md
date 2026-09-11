@@ -42,6 +42,20 @@ Two details that make it usable rather than merely correct:
 - **Grace window.** A brief slip off-target (gaze jitter, a tremor, one dropped EMG frame) does not restart the dwell — progress resumes. Restarting on every slip makes an interface punishing.
 - **Sweep rejection.** A signal merely passing across a target is normal for gaze and is not counted as a failed attempt, so it cannot skew the adaptation.
 
+## Making content addressable
+
+An input layer is only useful if there is a target to land on. Screen readers have the accessibility tree; a dwell engine has nothing unless the words are individually addressable. `tagWords` turns a block of prose into addressable words **without changing how it looks or reads**:
+
+```js
+import { tagWords } from 'access-input/words.js';
+
+tagWords(document.getElementById('article'));  // every word becomes a dwell target
+```
+
+It wraps each word in an inline `<span>` carrying `data-dwell-target`, and never alters, collapses, or re-orders the text. That property is load-bearing: a component that tokenizes the same content (`<read-along>` does) computes its offsets from `textContent`, so if wrapping changed a single character every highlight would land on the wrong word. The wrapping is purely additive — same characters, same order, more nodes.
+
+`splitWords(text)` gives you the word records with source offsets if you want to build targets yourself, and `untagWords(el)` restores the original DOM.
+
 ## Sources
 
 | Source | Capabilities | Notes |
@@ -86,7 +100,7 @@ python -m http.server 8795
 # open http://127.0.0.1:8795/demo/
 ```
 
-The demo switches live between pointer-dwell, single-switch auto-scan, and keyboard, over both a reading surface and a plain four-cell grid — to show the input layer does not care what the content is.
+The demo switches live between pointer-dwell, single-switch auto-scan, and keyboard, over both a reading surface and a plain four-cell grid — to show the input layer does not care what the content is. Watch the amber ring fill as you rest on a word: that fill is the dwell, and the word activates when it completes.
 
 ## Tests
 
@@ -94,7 +108,7 @@ The demo switches live between pointer-dwell, single-switch auto-scan, and keybo
 npm test
 ```
 
-20 tests, zero dependencies, `node:test`. The dwell engine takes an **injected clock** everywhere, so every timing assertion is about logic rather than wall-clock behaviour.
+31 tests, zero dependencies, `node:test`. The dwell engine takes an **injected clock** everywhere, so every timing assertion is about logic rather than wall-clock behaviour.
 
 ## API
 
@@ -111,6 +125,14 @@ new DwellEngine({ dwellMs, minDwellMs, maxDwellMs, graceMs, adaptive,
 ```
 
 Time is always supplied by the caller (`performance.now()` in a browser, an injected clock in tests) — the engine never reads a clock itself, so its behaviour is fully deterministic.
+
+### words
+
+```js
+splitWords(text)        // [{ text, start, end, index }]
+tagWords(el, opts)      // wrap words as dwell targets; returns the word list
+untagWords(el)          // restore the original DOM
+```
 
 ## License
 
