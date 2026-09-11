@@ -6,9 +6,9 @@ Zero dependencies. MIT. Runs in the browser, testable in Node.
 
 **[Try the live demo →](https://le-vai.github.io/access-input/demo/)**
 
-https://github.com/LE-VAI/access-input/assets/demo.mp4
+https://raw.githubusercontent.com/LE-VAI/access-input/main/docs/assets/demo.mp4
 
-*(53s: dwell in action, then single-switch scanning and keyboard access on the same interface.)*
+*(53s — dwell activation on a reading surface, then single-switch scanning and keyboard access on the same interface. [Download the MP4](docs/assets/demo.mp4) if it doesn't play inline.)*
 
 ```bash
 npm install access-input
