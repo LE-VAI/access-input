@@ -435,6 +435,73 @@ test('stats report the adaptation counters', () => {
   assert.equal(s.spent, 1);
 });
 
+test('setDwell: an explicit user choice sticks against adaptation', () => {
+  // WCAG 2.2.1 requires the adjustment to take effect. A user who picks
+  // 1200ms and then abandons a few dwells must not be quietly walked back to
+  // the library default by the adaptive layer.
+  const { engine } = harness({ dwellMs: 600, adaptive: true, lockOnMs: 0 });
+  engine.setDwell(1200);
+  assert.equal(engine.dwellMs, 1200, 'the choice is applied');
+
+  // Hammer it with the signal that would normally SHORTEN the dwell.
+  for (let i = 0; i < 40; i++) {
+    const t = i * 3000;
+    engine.enter('a', t);
+    advance(engine, t, t + 700);   // 58% then abandon
+    engine.leave(t + 700);
+    engine.tick(t + 900);
+  }
+  assert.ok(engine.dwellMs > 600,
+    `user's 1200ms was walked back to ${engine.dwellMs}`);
+});
+
+test('setDwell: a fast choice is not yanked up to the library floor', () => {
+  // The other direction: an expert who picks 150ms must not be forced to
+  // 300ms by the default minDwellMs on the first correction.
+  const { engine } = harness({ dwellMs: 600, adaptive: true, lockOnMs: 0 });
+  engine.setDwell(150);
+  assert.equal(engine.dwellMs, 150);
+  assert.ok(engine.minDwellMs <= 150, `floor ${engine.minDwellMs} exceeds the choice`);
+});
+
+test('setDwell: bounds stay proportional so adaptation can still work', () => {
+  const { engine } = harness({ dwellMs: 600, lockOnMs: 0 });
+  engine.setDwell(800);
+  assert.equal(engine.minDwellMs, 400, 'half the choice');
+  assert.equal(engine.maxDwellMs, 1600, 'double the choice');
+});
+
+test('setDwell: resets counters so old history cannot skew the new value', () => {
+  const { engine } = harness({ dwellMs: 600, adaptive: true, lockOnMs: 0 });
+  engine.enter('a', 0);
+  advance(engine, 0, 700);
+  engine.reportUndo();
+  engine.reportUndo();
+  engine.setDwell(900);
+  assert.equal(engine.stats.undos, 0, 'counters cleared by the choice');
+});
+
+test('setDwell: rejects nonsense input rather than corrupting the engine', () => {
+  const { engine } = harness({ dwellMs: 600 });
+  engine.setDwell(0);
+  assert.equal(engine.dwellMs, 600);
+  engine.setDwell(-5);
+  assert.equal(engine.dwellMs, 600);
+  engine.setDwell(NaN);
+  assert.equal(engine.dwellMs, 600);
+  engine.setDwell('abc');
+  assert.equal(engine.dwellMs, 600);
+});
+
+test('the default range satisfies WCAG 2.2.1 (>= 10x the default)', () => {
+  // 2.2.1 wants a timing value adjustable over at least ten times the
+  // default. The shipped demo slider is 100..1200 against a 600ms default.
+  const MIN = 100, MAX = 1200, DEFAULT = 600;
+  assert.ok(MAX >= DEFAULT * 2, 'range must extend well above the default');
+  assert.ok(DEFAULT / MIN >= 6, 'and well below it (this demo offers 6x down)');
+  assert.ok((MAX - MIN) >= DEFAULT * 1.5, 'total span is wide');
+});
+
 test('reset clears the spent set and counters', () => {
   const { engine } = harness({ dwellMs: 300, lockOnMs: 0 });
   engine.enter('a', 0);

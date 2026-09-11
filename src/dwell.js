@@ -193,6 +193,36 @@ export class DwellEngine {
   isSpent(id) { return this._spent.has(id); }
 
   /**
+   * Set the dwell duration from an explicit user choice.
+   *
+   * WCAG 2.2.1 (Timing Adjustable) requires that a user be able to adjust a
+   * timing value "over a wide range that is at least ten times the length of
+   * the default setting" — and that the adjustment actually take effect. So
+   * an explicit choice does two things beyond assigning the value:
+   *
+   *   1. It re-centres the ADAPTIVE bounds around the chosen value. Without
+   *      this, a user who picks 1200ms while the ceiling is 1500ms has their
+   *      choice slowly walked back by adaptation, and a user who picks 150ms
+   *      is yanked up to the 300ms floor on the first correction. The user's
+   *      number is a decision, not a starting guess.
+   *   2. It resets the adaptation counters, so history from before the change
+   *      does not immediately pull the new value somewhere else.
+   *
+   * @param {number} ms
+   */
+  setDwell(ms) {
+    const v = Number(ms);
+    if (!Number.isFinite(v) || v <= 0) return;
+    this.dwellMs = v;
+    // Bounds stay proportional to the choice: half to double. That keeps
+    // adaptation useful (it can still move) without ever contradicting the
+    // user by a large factor.
+    this.minDwellMs = Math.max(50, Math.round(v * 0.5));
+    this.maxDwellMs = Math.max(this.minDwellMs + 100, Math.round(v * 2));
+    this.reset();
+  }
+
+  /**
    * Global kill switch. Every platform ships one — Microsoft's "Pause eye
    * control", Apple's "Pause Dwell", eViacam's "No click", Grid 3's "Stop
    * scan" — because a user watching a video or reading must be able to stop

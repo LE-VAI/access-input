@@ -116,7 +116,7 @@ word and the reading starts from there. Neither library knows about the other's 
     <button id="m-external" aria-pressed="false">External device</button>
   </div>
   <div class="row">
-    <label class="status">Dwell <input id="dwell-range" type="range" min="100" max="1200" step="50" value="600"> <span id="dwell-val">600ms</span></label>
+    <label class="status">Dwell <input id="dwell-range" type="range" min="100" max="1200" step="25" value="600" aria-label="Dwell time in milliseconds"> <span id="dwell-val">600ms</span></label>
     <button id="pause-btn" aria-pressed="false">Pause (kill switch)</button>
   </div>
   <div class="row">
@@ -322,6 +322,9 @@ dwellRange.addEventListener('input', () => {
   dwellVal.textContent = `${dwellRange.value}ms`;
   rebuild();
 });
+// A fresh engine is built on every rebuild(), so the slider's value is
+// applied there via the constructor — setDwell() is used for in-place
+// changes on a live engine (see the main demo).
 pauseBtn.addEventListener('click', () => {
   const d = host.dwell;
   if (d.paused) {

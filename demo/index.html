@@ -120,7 +120,7 @@ The point is that nothing above this layer needs to know which one you used.</p>
     <button id="m-keyboard" aria-pressed="false">Keyboard (arrows)</button>
   </div>
   <div class="row">
-    <label class="status">Dwell <input id="dwell-range" type="range" min="300" max="2000" step="50" value="700"> <span id="dwell-val">700ms</span></label>
+    <label class="status">Dwell <input id="dwell-range" type="range" min="100" max="1200" step="25" value="600" aria-label="Dwell time in milliseconds"> <span id="dwell-val">600ms</span></label>
     <label class="status">Adaptive <input id="adaptive" type="checkbox" checked></label>
   </div>
   <div class="row">
@@ -322,8 +322,10 @@ document.getElementById('undo').addEventListener('click', () => {
 
 dwellRange.addEventListener('input', () => {
   dwellVal.textContent = `${dwellRange.value}ms`;
-  dwell.dwellMs = Number(dwellRange.value);
-  dwell.reset();
+  // setDwell (not a bare assignment) so the user's explicit choice becomes
+  // authoritative — adaptation re-centres around it rather than walking it
+  // back toward the old bounds. WCAG 2.2.1: the adjustment must stick.
+  dwell.setDwell(Number(dwellRange.value));
   updateStats();
 });
 lockonRange.addEventListener('input', () => {
