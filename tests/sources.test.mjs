@@ -19,6 +19,16 @@ import {
 } from '../src/sources.js';
 import { DwellEngine } from '../src/dwell.js';
 
+/**
+ * Advance a dwell engine at frame cadence. A single sparse hold() call trips
+ * the clock-gap guard — correctly, since a heartbeat gap means the host
+ * stopped ticking — so source tests must tick the way a real host does.
+ */
+function advance(dwell, fromMs, toMs, step = 16) {
+  for (let t = fromMs; t <= toMs; t += step) dwell.hold(t);
+  if ((toMs - fromMs) % step !== 0) dwell.hold(toMs);
+}
+
 // -- capabilities + bridge --------------------------------------------------
 
 test('ExternalSource declares continuous + direct capabilities', () => {
@@ -40,7 +50,7 @@ test('a continuous-only source drives dwell; its select is not used', () => {
   src.start();
   src.focus('w3', 0);
   assert.equal(dwell.target, 'w3', 'a continuous source must start a dwell');
-  dwell.hold(1200);
+  advance(dwell, 0, 1200);
   assert.equal(events.length, 1);
   assert.equal(events[0].via, 'dwell');
 });
@@ -147,7 +157,7 @@ test('the bridge chains onto engine callbacks instead of clobbering them', () =>
   });
   src.start();
   src.focus('w1', 0);
-  dwell.hold(400);
+  advance(dwell, 0, 400);
   assert.ok(hostProgress.length > 0, 'the host handler must still fire');
   assert.ok(bridgeProgress.length > 0, 'the bridge handler must also fire');
 });
@@ -251,6 +261,62 @@ test('SWITCH: maxCycles stops the scan after the configured passes', () => {
   // Two full passes of 2 items each = 4 advances to reach the cap.
   for (let i = 0; i < 5; i++) src._advance(i);
   assert.equal(src.scanning, false, 'scan must stop at the cycle cap');
+});
+
+test('SWITCH: row-column groups targets into rows by position', () => {
+  // Three rows of three. The grouping is by vertical centre, so markup does
+  // not need to declare rows — layout decides them.
+  const rows = [
+    [0, 0], [1, 0], [2, 0],       // row 0: same y
+    [0, 1], [1, 1], [2, 1],       // row 1
+    [0, 2], [1, 2], [2, 2],       // row 2
+  ];
+  const els = rows.map(([x, y], i) => ({
+    getAttribute: () => `t${i}`,
+    getBoundingClientRect: () => ({ top: y * 100, height: 40, left: x * 100 }),
+  }));
+  const src = new SwitchSource({ scanPattern: 'row-column', now: () => 1000 });
+  src.attach({ querySelectorAll: () => els });
+  const grouped = src._rows();
+  assert.equal(grouped.length, 3, 'three visual rows expected');
+  assert.equal(grouped[0].length, 3, 'each row holds three items');
+});
+
+test('SWITCH: row-column degrades to linear with a single row', () => {
+  const els = [0, 1, 2].map((i) => ({
+    getAttribute: () => `t${i}`,
+    getBoundingClientRect: () => ({ top: 0, height: 40, left: i * 100 }),
+  }));
+  const focus = [];
+  const src = new SwitchSource({ scanPattern: 'row-column', now: () => 1000 });
+  src.attach({ querySelectorAll: () => els });
+  src.onFocus = (id) => focus.push(id);
+  src._active = true;
+  src._advance(0); src._advance(1); src._advance(2);
+  assert.deepEqual(focus, ['t0', 't1', 't2'], 'single row scans linearly');
+});
+
+test('SWITCH: row-column press chooses a row, then an item', () => {
+  // Two rows of two.
+  const rows = [[0, 0], [1, 0], [0, 1], [1, 1]];
+  const els = rows.map(([x, y], i) => ({
+    getAttribute: () => `t${i}`,
+    getBoundingClientRect: () => ({ top: y * 100, height: 40, left: x * 100 }),
+  }));
+  const selects = [];
+  const src = new SwitchSource({ scanPattern: 'row-column', debounceMs: 0, accidentalPressMs: 0, now: () => 1000 });
+  src.attach({ querySelectorAll: () => els });
+  src.onSelect = (id) => selects.push(id);
+  src._active = true;
+
+  src._advance(0);              // row phase → row 0
+  assert.equal(src._phase, 'row');
+  src.press(10);                // press chooses row 0 → item phase
+  assert.equal(src._phase, 'item', 'press in row phase selects the ROW');
+  assert.equal(selects.length, 0, 'no item selected yet');
+  src.press(200);               // press in item phase selects the item
+  assert.equal(selects.length, 1);
+  assert.equal(src._phase, 'row', 'returns to row phase after a selection');
 });
 
 test('SWITCH: pauseScan and resumeScan control the timer', () => {

@@ -51,6 +51,7 @@ Two details that make it usable rather than merely correct:
 
 - **Grace window.** A brief slip off-target (gaze jitter, a tremor, one dropped EMG frame) does not restart the dwell — progress resumes. Restarting on every slip makes an interface punishing.
 - **Sweep rejection.** A signal merely passing across a target is normal for gaze and is not counted as a failed attempt, so it cannot skew the adaptation.
+- **Clock-gap guard.** If the host stops ticking (a hidden tab, machine sleep, a stalled device stream), the gap is NOT counted as dwell progress — the attempt is abandoned. Without this, resting on a word, switching tabs for ten seconds, and returning fires an activation the user never made.
 
 ## Making content addressable
 
@@ -72,8 +73,10 @@ It wraps each word in an inline `<span>` carrying `data-dwell-target`, and never
 |---|---|---|
 | `PointerSource` | continuous | Mouse/touch. The access method everyone already has, so it is also the fallback. |
 | `KeyboardSource` | direct | Arrows/Tab to move, Enter to select. |
-| `SwitchSource` | direct | One binary switch on any key, optional auto-scan. |
+| `SwitchSource` | direct | One binary switch on any key, optional auto-scan, linear or row-column scanning. |
 | `ExternalSource` | continuous + direct | **The escape hatch.** Any device that can reach the page drives the host by calling `focus()`, `select()`, `cancel()`. |
+
+Switch scanning follows the AAC platform consensus: the scan **pauses after a selection** (so the next press is deliberate), presses are debounced against bounce and accidental double-press, the first item gets an orientation delay, and `scanPattern: 'row-column'` is available for grids — grouping targets into rows by *layout*, with no markup required to declare them.
 
 `SignalBridge` wires a source to a `DwellEngine` and your handler. The one rule that matters: a **continuous** source dwells (position → dwell → activate); a **direct** source does not (its select already happened). Dwelling on a switch press would be nonsense. A host that knows its actual device can override with `mode: 'dwell' | 'direct'`, because the host knows the hardware and the class only knows the category.
 

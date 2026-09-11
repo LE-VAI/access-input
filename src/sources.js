@@ -409,6 +409,13 @@ export class SwitchSource extends InputSource {
     this._index = -1;
     this._timer = null;
     this._bound = false;
+    // Row-column state. The scan is a two-phase machine: 'row' walks rows,
+    // 'item' walks the items inside the selected row. Linear scanning ignores
+    // both and uses _index.
+    this.scanPattern = options.scanPattern ?? 'linear';
+    this._phase = 'row';
+    this._rowIndex = -1;
+    this._itemIndex = -1;
     this._lastPressAt = -Infinity;  // debounce
     this._lastSelectAt = -Infinity; // accidental-press gate
     this._cycles = 0;
@@ -420,6 +427,46 @@ export class SwitchSource extends InputSource {
     return this._root ? Array.from(this._root.querySelectorAll('[data-dwell-target]')) : [];
   }
 
+  /**
+   * Group targets into rows by their vertical position. Row-column scanning
+   * is the recommended pattern for grids (Android: "often faster than linear
+   * scanning"; AssistiveWare notes single-switch linear scanning "has
+   * significant timing and attention demands"), but it needs to know what a
+   * row IS — and this layer does not otherwise care about layout.
+   *
+   * Targets are grouped by their vertical centre with a tolerance, so items
+   * that share a visual row land in one group without requiring markup to
+   * declare it. Targets with no measurable geometry (a test stub, a detached
+   * node) all collapse into a single row, which degrades to linear scanning.
+   */
+  _rows() {
+    const targets = this._targets();
+    if (!targets.length) return [];
+    const measured = targets.map((el, i) => {
+      const r = el.getBoundingClientRect?.();
+      return { i, el, mid: r ? r.top + r.height / 2 : 0 };
+    });
+    measured.sort((a, b) => a.mid - b.mid || a.i - b.i);
+
+    const rows = [];
+    let current = [measured[0]];
+    // Tolerance in pixels: half a typical target height separates real rows
+    // without splitting a row on sub-pixel differences.
+    const TOLERANCE = 12;
+    for (let k = 1; k < measured.length; k++) {
+      if (Math.abs(measured[k].mid - current[0].mid) <= TOLERANCE) {
+        current.push(measured[k]);
+      } else {
+        rows.push(current);
+        current = [measured[k]];
+      }
+    }
+    rows.push(current);
+    // Order each row left-to-right so scanning reads naturally.
+    for (const row of rows) row.sort((a, b) => a.i - b.i);
+    return rows;
+  }
+
   /** Attach the DOM subtree whose targets this switch scans. */
   attach(root) { this._root = root; }
 
@@ -429,6 +476,49 @@ export class SwitchSource extends InputSource {
   _advance(tMs) {
     const targets = this._targets();
     if (!targets.length) return;
+
+    // Row-column scanning: phase 1 walks whole ROWS, phase 2 walks the items
+    // WITHIN the chosen row. Two phases mean at most rows+items steps instead
+    // of one step per item, which is why every AAC platform offers it for
+    // grids. A single row (or unmeasurable geometry) degrades to linear.
+    if (this.scanPattern === 'row-column') {
+      const rows = this._rows();
+      if (rows.length > 1) {
+        const step = this.reverse ? -1 : 1;
+        if (this._phase === 'row') {
+          const nextRow = this._rowIndex + step;
+          if (nextRow >= rows.length || nextRow < 0) {
+            this._cycles++;
+            if (this.maxCycles > 0 && this._cycles >= this.maxCycles) {
+              this.pauseScan();
+              return;
+            }
+          }
+          this._rowIndex = ((nextRow % rows.length) + rows.length) % rows.length;
+          // Announce the row by highlighting its FIRST item — the user needs
+          // to see where the row starts before choosing it.
+          const first = rows[this._rowIndex][0];
+          this.onFocus?.(first.el.getAttribute('data-dwell-target'), tMs);
+          return;
+        }
+        // Phase 2: walk items inside the chosen row.
+        const row = rows[this._rowIndex] || [];
+        if (!row.length) return;
+        const nextItem = this._itemIndex + step;
+        if (nextItem >= row.length) {
+          this._cycles++;
+          if (this.maxCycles > 0 && this._cycles >= this.maxCycles) {
+            this.pauseScan();
+            return;
+          }
+        }
+        this._itemIndex = ((nextItem % row.length) + row.length) % row.length;
+        this.onFocus?.(row[this._itemIndex].el.getAttribute('data-dwell-target'), tMs);
+        return;
+      }
+    }
+
+    // Linear scanning (the default).
     const step = this.reverse ? -1 : 1;
     const next = this._index + step;
     if (next >= targets.length) {
@@ -467,6 +557,34 @@ export class SwitchSource extends InputSource {
 
     // Gate 2: a press immediately after a selection is treated as unintended.
     if (tMs - this._lastSelectAt < this.accidentalPressMs) return;
+
+    // Row-column phase 1: the press chooses a ROW, not an item. The scan then
+    // narrows to the items inside it.
+    if (this.scanPattern === 'row-column' && this._phase === 'row') {
+      const rows = this._rows();
+      if (rows.length > 1 && this._rowIndex >= 0) {
+        this._phase = 'item';
+        this._itemIndex = -1;
+        this._advance(tMs); // focus the first item of the chosen row
+        return;
+      }
+    }
+
+    if (this.scanPattern === 'row-column' && this._phase === 'item') {
+      const rows = this._rows();
+      const row = rows[this._rowIndex] || [];
+      const id = row[this._itemIndex]?.el.getAttribute('data-dwell-target');
+      if (id) {
+        this._lastSelectAt = tMs;
+        this.onSelect?.(id, tMs);
+        // Return to row phase so the next selection starts from the top.
+        this._phase = 'row';
+        this._rowIndex = -1;
+        this._itemIndex = -1;
+        if (this.pauseScanOnSelect && this.autoScan) this.pauseScan();
+      }
+      return;
+    }
 
     if (this._index < 0) {
       this._advance(tMs);

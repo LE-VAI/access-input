@@ -80,6 +80,21 @@ const ADAPT_COOLDOWN_EVENTS = 3;
 const MIN_DWELL_MS = 300;
 const MAX_DWELL_MS = 1500;
 
+/**
+ * A gap this large between heartbeats means the host stopped ticking — almost
+ * always because the tab was hidden (rAF pauses in background tabs) or the
+ * machine slept. The dwell must NOT treat that gap as progress: a user who
+ * rests on a word and switches tabs for ten seconds has not been dwelling for
+ * ten seconds, and firing on return is an accidental activation the user
+ * never made. On a gap this large the engine abandons the attempt and
+ * requires a fresh one.
+ *
+ * 250ms is chosen from the same perceptual window Microsoft uses for gaze
+ * onset (150-250ms): beyond it, the frames are no longer contiguous from the
+ * user's point of view.
+ */
+const CLOCK_GAP_MS = 250;
+
 export class DwellEngine {
   /**
    * @param {object} [options]
@@ -119,6 +134,7 @@ export class DwellEngine {
     this._phase = 'idle';     // idle | lockon | dwell
     this._lastProgressAt = -Infinity;
     this._leftAt = null;      // when we left the target (grace window start)
+    this._lastHeartbeatAt = -Infinity; // for the clock-gap guard
     this._paused = false;     // global kill switch
 
     // Repeat gating. `_spent` holds targets that fired and have not yet been
@@ -245,6 +261,7 @@ export class DwellEngine {
       this._enteredAt = tMs;
       this._accumulatedMs = 0;
       this._leftAt = null;
+      this._lastHeartbeatAt = tMs;
       this.onPhase?.('spent', targetId);
       return;
     }
@@ -254,6 +271,7 @@ export class DwellEngine {
     this._accumulatedMs = 0;
     this._leftAt = null;
     this._lastProgressAt = -Infinity;
+    this._lastHeartbeatAt = tMs;
     this._phase = this.lockOnMs > 0 ? 'lockon' : 'dwell';
     this.onPhase?.(this._phase, targetId);
   }
@@ -266,6 +284,30 @@ export class DwellEngine {
   hold(tMs) {
     if (this._paused) return;
     if (this._target === null || this._leftAt !== null) return;
+
+    // Clock-gap guard. A heartbeat this far from the last one means the host
+    // stopped ticking (hidden tab, sleep, a stalled device stream) — the
+    // elapsed time is wall-clock, not dwell time. Treat the attempt as
+    // abandoned and require a fresh one, rather than firing on return.
+    if (tMs - this._lastHeartbeatAt > CLOCK_GAP_MS) {
+      const id = this._target;
+      const wasSpent = this._phase === 'spent';
+      this._lastHeartbeatAt = tMs;
+      this._target = null;
+      this._phase = 'idle';
+      this._accumulatedMs = 0;
+      this._leftAt = null;
+      if (wasSpent) {
+        this._spent.delete(id); // a gap is a departure: re-arm
+        this.onPhase?.(null, null);
+        return;
+      }
+      this.onPhase?.(null, null);
+      this.onCancel?.(id, { reason: 'clock-gap', progress: 0 });
+      return;
+    }
+    this._lastHeartbeatAt = tMs;
+
     if (this._phase === 'spent') {
       // A repeat-capable target re-fires on a timer while held; a normal one
       // waits for a departure (leave-to-rearm) and does nothing here.
@@ -290,6 +332,7 @@ export class DwellEngine {
         // is exactly dwellMs regardless of the lock-on setting.
         this._accumulatedMs = 0;
         this._enteredAt = tMs;
+        this._lastHeartbeatAt = tMs;
         this.onPhase?.('dwell', this._target);
       }
       return;
@@ -402,6 +445,7 @@ export class DwellEngine {
     this._accumulatedMs = 0;
     this._leftAt = null;
     this._enteredAt = tMs; // repeat targets measure their interval from here
+    this._lastHeartbeatAt = tMs;
     this._spent.add(id);
 
     // ORDER MATTERS. The progress callback reports 1 (the dwell completed),

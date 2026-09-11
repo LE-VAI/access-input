@@ -61,6 +61,24 @@
   .ra-dwell-word[data-dwell-focus] {
     outline: 1px solid color-mix(in oklab, var(--amber) 55%, transparent);
   }
+  /* Reduced motion must SWAP the indicator, never remove it. The fill is the
+     only feedback telling a user how long they must keep dwelling — deleting
+     it would remove information, not decoration. So the gradient (which reads
+     as motion) becomes a flat stepwise fill with no interpolation. */
+  @media (prefers-reduced-motion: reduce) {
+    .ra-dwell-word, .cell, button {
+      transition: none;
+    }
+    .ra-dwell-word, .cell {
+      /* Instant fill rather than a smooth sweep. */
+      background-image: linear-gradient(
+        to right,
+        color-mix(in oklab, var(--amber) 38%, transparent) calc(var(--dwell-progress, 0) * 100%),
+        transparent calc(var(--dwell-progress, 0) * 100%)
+      );
+    }
+    * { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
+  }
   /* Scan mode (switch users): the focused target gets a clear marker. */
   body[data-scanning] .ra-dwell-word[data-dwell-focus] {
     background-color: color-mix(in oklab, var(--amber) 22%, transparent);
