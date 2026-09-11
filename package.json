@@ -1,0 +1,48 @@
+{
+  "name": "access-input",
+  "version": "0.1.0",
+  "description": "Input-abstraction substrate for assistive access: dwell activation, switch scanning, gaze/EMG/EEG-agnostic sources, and a read-along adapter. Zero dependencies.",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./dwell.js": "./src/dwell.js",
+    "./sources.js": "./src/sources.js",
+    "./read-along.js": "./src/read-along.js"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test tests/dwell.test.mjs tests/sources.test.mjs"
+  },
+  "keywords": [
+    "accessibility",
+    "a11y",
+    "assistive-technology",
+    "switch-access",
+    "dwell",
+    "eye-gaze",
+    "emg",
+    "bci",
+    "aac",
+    "single-switch",
+    "scanning",
+    "read-along"
+  ],
+  "license": "MIT",
+  "author": "Le Vain Bey",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LE-VAI/access-input.git"
+  },
+  "bugs": {
+    "url": "https://github.com/LE-VAI/access-input/issues"
+  },
+  "homepage": "https://github.com/LE-VAI/access-input#readme",
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Access input — dwell, switch, and gaze on a reading surface</title>
+<style>
+  :root {
+    --bg: #0b0c0f;
+    --surface: #181a1e;
+    --border: #2a2d33;
+    --text: #f5f5f7;
+    --dim: #9a9aa5;
+    --amber: #ffc400;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 16px/1.65 ui-sans-serif, system-ui, sans-serif;
+    padding: clamp(20px, 5vw, 64px);
+    max-width: 780px; margin-inline: auto;
+  }
+  .eyebrow {
+    font: 600 12px/1 ui-sans-serif, system-ui, sans-serif;
+    letter-spacing: 0.14em; text-transform: uppercase; color: var(--amber);
+    margin-bottom: 14px;
+  }
+  h1 { font-size: clamp(26px, 4.5vw, 36px); letter-spacing: -0.02em; margin-bottom: 12px; }
+  .sub { color: var(--dim); font-size: 15px; margin-bottom: 32px; max-width: 60ch; }
+  .panel {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 14px; padding: 22px; margin-bottom: 20px;
+  }
+  .panel h2 { font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--dim); margin-bottom: 14px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+  button {
+    background: transparent; color: var(--text); border: 1px solid var(--border);
+    border-radius: 999px; padding: 7px 15px; font: 500 13px/1 inherit; cursor: pointer;
+  }
+  button[aria-pressed="true"] { background: var(--amber); color: #0b0c0f; border-color: var(--amber); }
+  button:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+  .status { font-variant-numeric: tabular-nums; color: var(--dim); font-size: 13px; }
+  .readtext { font-size: 17px; line-height: 1.9; }
+
+  /* Dwell targets: the word wrappers the adapter creates. */
+  .ra-dwell-word {
+    position: relative; border-radius: 3px;
+    transition: background-color 120ms linear;
+    /* The dwell ring: a background that fills left-to-right as progress
+       advances. Driven by --dwell-progress, set by the adapter. */
+    background-image: linear-gradient(
+      to right,
+      color-mix(in oklab, var(--amber) 38%, transparent) calc(var(--dwell-progress, 0) * 100%),
+      transparent calc(var(--dwell-progress, 0) * 100%)
+    );
+  }
+  .ra-dwell-word[data-dwell-focus] {
+    outline: 1px solid color-mix(in oklab, var(--amber) 55%, transparent);
+  }
+  /* Scan mode (switch users): the focused target gets a clear marker. */
+  body[data-scanning] .ra-dwell-word[data-dwell-focus] {
+    background-color: color-mix(in oklab, var(--amber) 22%, transparent);
+  }
+  .log {
+    font: 12px/1.6 ui-monospace, monospace; color: var(--dim);
+    max-height: 130px; overflow-y: auto; white-space: pre-wrap;
+  }
+  .hint { font-size: 13.5px; color: var(--dim); margin-top: 10px; }
+  kbd {
+    font: 11px ui-monospace, monospace; background: #23262c;
+    border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px;
+  }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+  .cell {
+    border: 1px solid var(--border); border-radius: 10px; padding: 14px;
+    text-align: center; font-size: 14px; position: relative;
+    background-image: linear-gradient(
+      to right,
+      color-mix(in oklab, var(--amber) 38%, transparent) calc(var(--dwell-progress, 0) * 100%),
+      transparent calc(var(--dwell-progress, 0) * 100%)
+    );
+  }
+  .cell[data-dwell-focus] { outline: 1px solid color-mix(in oklab, var(--amber) 55%, transparent); }
+</style>
+</head>
+<body>
+<p class="eyebrow">Open source · MIT</p>
+<h1>Access input</h1>
+<p class="sub">The same interface, driven by whatever signal a person has.
+Pick a mode below and use the surface — rest to activate, or press to scan.
+The point is that nothing above this layer needs to know which one you used.</p>
+
+<div class="panel">
+  <h2>Input mode</h2>
+  <div class="row">
+    <button id="m-pointer" aria-pressed="true">Pointer (dwell)</button>
+    <button id="m-switch" aria-pressed="false">Single switch (scan)</button>
+    <button id="m-keyboard" aria-pressed="false">Keyboard (arrows)</button>
+  </div>
+  <div class="row">
+    <label class="status">Dwell <input id="dwell-range" type="range" min="300" max="2000" step="50" value="700"> <span id="dwell-val">700ms</span></label>
+    <label class="status">Adaptive <input id="adaptive" type="checkbox" checked></label>
+  </div>
+  <div class="row">
+    <span class="status" id="stats">activations 0 · undos 0 · abandons 0 · dwell 700ms</span>
+    <button id="undo">Report undo</button>
+  </div>
+  <p class="hint" id="mode-hint">Rest the pointer on a word until the amber fill completes.</p>
+</div>
+
+<div class="panel">
+  <h2>Reading surface</h2>
+  <div class="readtext" id="reading">Reading while listening helps because the eye and the ear reinforce each other. The words stay visible while the voice moves through them.</div>
+</div>
+
+<div class="panel">
+  <h2>Target grid — the same layer, any content</h2>
+  <div class="grid" id="grid">
+    <div class="cell" data-dwell-target="yes">Yes</div>
+    <div class="cell" data-dwell-target="no">No</div>
+    <div class="cell" data-dwell-target="more">More</div>
+    <div class="cell" data-dwell-target="stop">Stop</div>
+  </div>
+  <p class="hint">The grid is not a reading surface at all — it is four plain divs. The input layer did not change.</p>
+</div>
+
+<div class="panel">
+  <h2>Event log</h2>
+  <div class="log" id="log"></div>
+</div>
+
+<script type="module">
+import { DwellEngine, SignalBridge, PointerSource, SwitchSource, KeyboardSource, ExternalSource }
+  from '../src/index.js';
+
+const logEl = document.getElementById('log');
+const statsEl = document.getElementById('stats');
+const dwellRange = document.getElementById('dwell-range');
+const dwellVal = document.getElementById('dwell-val');
+const adaptiveBox = document.getElementById('adaptive');
+
+const log = (msg) => {
+  const t = new Date().toLocaleTimeString('en-US', { hour12: false });
+  logEl.textContent = `${t}  ${msg}\n` + logEl.textContent;
+};
+
+let dwell = null, bridge = null, source = null, mode = 'pointer';
+
+function targets() {
+  return document.querySelectorAll('[data-dwell-target]');
+}
+
+function activate(id, meta) {
+  log(`ACTIVATE ${id} (via ${meta.via})`);
+  if (meta.via === 'dwell') flash(id);
+  if (mode !== 'keyboard') speakLabel(id);
+}
+
+function flash(id) {
+  const el = document.querySelector(`[data-dwell-target="${id}"]`);
+  if (!el) return;
+  el.animate(
+    [{ background: 'color-mix(in oklab, var(--amber) 55%, transparent)' },
+     { background: 'transparent' }],
+    { duration: 420, easing: 'ease-out' }
+  );
+}
+
+/** Speak the activated label — the reading surface's job, not the input layer's. */
+function speakLabel(id) {
+  const el = document.querySelector(`[data-dwell-target="${id}"]`);
+  if (!el || !('speechSynthesis' in window)) return;
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(el.textContent.trim());
+  u.rate = 1.05;
+  speechSynthesis.speak(u);
+}
+
+function rebuild() {
+  bridge?.stop();
+  source?.stop();
+  document.body.removeAttribute('data-scanning');
+
+  dwell = new DwellEngine({
+    dwellMs: Number(dwellRange.value),
+    adaptive: adaptiveBox.checked,
+    onProgress: (id, r) => {
+      const el = document.querySelector(`[data-dwell-target="${id}"]`);
+      if (el) el.style.setProperty('--dwell-progress', String(r));
+    },
+    onActivate: () => {},
+    onAdapt: (ms, meta) => log(`ADAPT dwell ${meta.from}ms → ${ms}ms`),
+  });
+
+  const common = {
+    onActivate: (id, meta) => activate(id, meta),
+    onFocus: (id) => {
+      document.querySelectorAll('[data-dwell-focus]')
+        .forEach((e) => e.removeAttribute('data-dwell-focus'));
+      if (id) document.querySelector(`[data-dwell-target="${id}"]`)?.setAttribute('data-dwell-focus', '');
+    },
+  };
+
+  if (mode === 'pointer') {
+    source = new PointerSource(document.body);
+    bridge = new SignalBridge({ source, dwell, ...common });
+  } else if (mode === 'switch') {
+    document.body.setAttribute('data-scanning', '');
+    source = new SwitchSource({ keys: [' ', 'Enter'], autoScan: true, scanMs: 1100 });
+    source.attach(document.body);
+    bridge = new SignalBridge({ source, dwell, mode: 'direct', ...common });
+  } else {
+    source = new KeyboardSource(document.body);
+    bridge = new SignalBridge({ source, dwell, mode: 'direct', ...common });
+  }
+  bridge.start();
+  updateStats();
+  log(`mode → ${mode}`);
+}
+
+function updateStats() {
+  const s = dwell.stats;
+  statsEl.textContent =
+    `activations ${s.activations} · undos ${s.undos} · abandons ${s.abandons} · dwell ${s.dwellMs}ms`;
+}
+
+document.getElementById('undo').addEventListener('click', () => {
+  dwell.reportUndo();
+  log('UNDO reported — dwell will lengthen');
+  updateStats();
+});
+
+dwellRange.addEventListener('input', () => {
+  dwellVal.textContent = `${dwellRange.value}ms`;
+  dwell.dwellMs = Number(dwellRange.value);
+  dwell.reset();
+  updateStats();
+});
+adaptiveBox.addEventListener('change', () => { dwell.adaptive = adaptiveBox.checked; });
+
+const modeButtons = {
+  pointer: document.getElementById('m-pointer'),
+  switch: document.getElementById('m-switch'),
+  keyboard: document.getElementById('m-keyboard'),
+};
+for (const [name, btn] of Object.entries(modeButtons)) {
+  btn.addEventListener('click', () => {
+    mode = name;
+    for (const [n, b] of Object.entries(modeButtons)) b.setAttribute('aria-pressed', String(n === name));
+    document.getElementById('mode-hint').textContent = {
+      pointer: 'Rest the pointer on a word until the amber fill completes.',
+      switch: 'Auto-scan is running. Press Space or Enter to select the highlighted target.',
+      keyboard: 'Use arrows or Tab to move, Enter to select.',
+    }[name];
+    rebuild();
+  });
+}
+
+// Poll the dwell so pointer progress paints even without a host ticker.
+setInterval(() => {
+  if (mode === 'pointer' && dwell) dwell.hold(performance.now());
+  updateStats();
+}, 40);
+
+rebuild();
+</script>
+</body>
+</html>

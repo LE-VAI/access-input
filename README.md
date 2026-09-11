@@ -1,0 +1,117 @@
+# access-input
+
+**The input-abstraction layer for assistive access.** Switch, gaze, EMG, head-pointer, keyboard — and one day EEG — all reduce to the same three events. This package is the seam between whatever signal a person can produce and whatever interface they need to drive.
+
+Zero dependencies. MIT. Runs in the browser, testable in Node.
+
+```js
+import { DwellEngine, SignalBridge, SwitchSource } from 'access-input';
+
+const dwell = new DwellEngine({ dwellMs: 700 });
+const source = new SwitchSource({ keys: [' '], autoScan: true });
+new SignalBridge({ source, dwell, mode: 'direct', onActivate: (id) => choose(id) });
+```
+
+## Why this exists
+
+Every access method that replaces a mouse click reduces to three events:
+
+| Event | Meaning | Produced by |
+|---|---|---|
+| **FOCUS** | "the pointer is on target X" | gaze position, head-pointer, mouse, a scan highlight |
+| **SELECT** | "the user chose X" | a switch press, a sip-puff, a dwell completing, a blink |
+| **CANCEL** | "the user backed out" | an escape gesture, an undo |
+
+An app built against those three events works for **every** access method without knowing which one is in use. That is the whole idea.
+
+It matters because the assistive-input ecosystem is a graveyard of single-purpose apps: a scanning keyboard that only accepts switches, a gaze app that only accepts one tracker. Each re-implements the same plumbing, and none can accept a new input without a rewrite. This layer is the missing seam.
+
+## The dwell problem, and what this does about it
+
+For someone using a switch, a gaze tracker, or an EMG channel, "click" does not exist. The universal substitute is **dwell**: rest on a target and it activates. Almost every implementation ships a *fixed* duration, and a fixed duration is always wrong for someone — too long and every selection costs seconds of held effort until fatigue wins; too short and tremor or gaze jitter fires activations the user did not intend, which is worse, because it destroys trust in the interface.
+
+`DwellEngine` starts from a calibrated value and adapts from two honest behavioural signals that **the host reports**, because only the host knows what "undo" means in its own UI:
+
+- **Abandoned attempts** — the user began dwelling and left before completion. Repeated abandonment means the duration is too long.
+- **Undone activations** — the host reports the user immediately reversed an activation. That means it was too short.
+
+The corrections are deliberately asymmetric: lengthening is applied harder (a wrong activation is more damaging than a slow one), and shortening needs more evidence (abandonment can just mean the user changed their mind). The engine never infers intent from raw signal noise — it counts outcomes the host labels.
+
+Two details that make it usable rather than merely correct:
+
+- **Grace window.** A brief slip off-target (gaze jitter, a tremor, one dropped EMG frame) does not restart the dwell — progress resumes. Restarting on every slip makes an interface punishing.
+- **Sweep rejection.** A signal merely passing across a target is normal for gaze and is not counted as a failed attempt, so it cannot skew the adaptation.
+
+## Sources
+
+| Source | Capabilities | Notes |
+|---|---|---|
+| `PointerSource` | continuous | Mouse/touch. The access method everyone already has, so it is also the fallback. |
+| `KeyboardSource` | direct | Arrows/Tab to move, Enter to select. |
+| `SwitchSource` | direct | One binary switch on any key, optional auto-scan. |
+| `ExternalSource` | continuous + direct | **The escape hatch.** Any device that can reach the page drives the host by calling `focus()`, `select()`, `cancel()`. |
+
+`SignalBridge` wires a source to a `DwellEngine` and your handler. The one rule that matters: a **continuous** source dwells (position → dwell → activate); a **direct** source does not (its select already happened). Dwelling on a switch press would be nonsense. A host that knows its actual device can override with `mode: 'dwell' | 'direct'`, because the host knows the hardware and the class only knows the category.
+
+## Why `ExternalSource` is the whole BCI story
+
+The thesis behind this package is that **the BCI software layer is accessibility software**, and that the useful thing to build is the timing/sync/input substrate rather than electrodes. `ExternalSource` is that claim made concrete: an EEG pipeline that can decide "focus" and "select" plugs in here **unchanged**, with no EEG-specific code in this package at all. The same is true of a BLE switch, a serial sip-puff sensor, or an eye-gaze bridge.
+
+That design is not an accident of laziness — it is what the 2026 landscape forces:
+
+- **BrainFlow has no browser binding.** Its JS package is Node-only FFI (`koffi`) and was ~9 months behind core as of Sep 2026. It is the best *native* EEG library and a dead end in a browser.
+- **Web Bluetooth is permanently Chromium-only** (Firefox WONTFIX, Safari no-plan). Web Serial is better — Chrome/Edge/Opera and Firefox 151+ (May 2026) — but still not Safari.
+- **The input-side ecosystem is mostly abandoned.** WebGazer.js ended official maintenance Feb 2026 with no successor found; the small JS switch-scan engines last saw commits in 2016–17. The live web options (Asterics AAC, Cboard) are AGPL/GPL, which cannot be embedded in a permissive substrate.
+
+So the durable contribution is the layer that outlives any particular device.
+
+## read-along adapter
+
+`ReadAlongInputHost` drives a [`<read-along>`](https://github.com/LE-VAI/read-along) element with any source. It tags each word as a dwell target and routes activations to word-level seek, so "rest on a word" reads from there — the gesture a pointer user gets from clicking, expressed in whatever signal the person actually has.
+
+```js
+import { ReadAlongInputHost } from 'access-input/read-along.js';
+import { SwitchSource } from 'access-input/sources.js';
+
+const host = new ReadAlongInputHost(document.querySelector('read-along'), {
+  source: new SwitchSource({ keys: [' '], autoScan: true }),
+});
+await host.start();
+```
+
+## Demo
+
+```bash
+python -m http.server 8795
+# open http://127.0.0.1:8795/demo/
+```
+
+The demo switches live between pointer-dwell, single-switch auto-scan, and keyboard, over both a reading surface and a plain four-cell grid — to show the input layer does not care what the content is.
+
+## Tests
+
+```bash
+npm test
+```
+
+20 tests, zero dependencies, `node:test`. The dwell engine takes an **injected clock** everywhere, so every timing assertion is about logic rather than wall-clock behaviour.
+
+## API
+
+```js
+new DwellEngine({ dwellMs, minDwellMs, maxDwellMs, graceMs, adaptive,
+                  onProgress, onActivate, onCancel, onAdapt })
+  .enter(targetId, tMs)   // signal arrived (or returned) on a target
+  .hold(tMs)              // heartbeat while on target
+  .leave(tMs)             // signal left; grace window begins
+  .tick(tMs)              // host heartbeat to expire the grace window
+  .cancel(reason)         // explicit cancel
+  .reportUndo()           // host: the user undid the last activation
+  .stats                  // { dwellMs, activations, undos, abandons }
+```
+
+Time is always supplied by the caller (`performance.now()` in a browser, an injected clock in tests) — the engine never reads a clock itself, so its behaviour is fully deterministic.
+
+## License
+
+MIT.

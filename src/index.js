@@ -1,0 +1,18 @@
+/**
+ * access-input — input abstraction for assistive access.
+ *
+ * Every access method reduces to three events: FOCUS, SELECT, CANCEL. This
+ * package provides the seam between whatever signal a person can produce and
+ * whatever interface they need to drive.
+ */
+
+export { DwellEngine } from './dwell.js';
+export {
+  InputSource,
+  PointerSource,
+  KeyboardSource,
+  SwitchSource,
+  ExternalSource,
+  SignalBridge,
+} from './sources.js';
+export { ReadAlongInputHost } from './read-along.js';
