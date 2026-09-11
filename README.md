@@ -172,6 +172,7 @@ new DwellEngine({
   .leave(tMs)             // signal left; grace window begins
   .tick(tMs)              // host heartbeat to expire the grace window
   .cancel(reason)         // explicit cancel
+  .setDwell(ms)           // authoritative user choice (WCAG 2.2.1)
   .pause() / .resume()    // global kill switch (all platforms ship one)
   .setRepeatTargets(ids)  // opt targets into timed auto-repeat
   .reportUndo()           // host: the user undid the last activation
@@ -179,6 +180,8 @@ new DwellEngine({
   .phase                  // 'idle' | 'lockon' | 'dwell' | 'spent'
   .stats                  // { dwellMs, lockOnMs, activations, undos, abandons, spent }
 ```
+
+**Use `setDwell()` for user-facing controls, not a bare assignment.** An explicit choice re-centres the adaptive bounds around the chosen value (half to double) and resets the adaptation counters, so the user's number is treated as a decision rather than a starting guess. WCAG 2.2.1 requires a timing value be adjustable over at least ten times the default — and that the adjustment actually hold.
 
 Time is always supplied by the caller (`performance.now()` in a browser, an injected clock in tests) — the engine never reads a clock itself, so its behaviour is fully deterministic.
 
