@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Access input × read-along — driving a reading surface by switch, gaze, or key</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@designesy/read-along@0.1.2/src/read-along.css">
+<style>
+  :root {
+    --bg: #0b0c0f;
+    --surface: #181a1e;
+    --border: #2a2d33;
+    --text: #f5f5f7;
+    --dim: #9a9aa5;
+    --amber: #ffc400;
+    --ra-highlight: rgb(255 196 0 / 0.42);
+    --ra-accent: #ffc400;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 16px/1.65 ui-sans-serif, system-ui, sans-serif;
+    padding: clamp(20px, 5vw, 64px);
+    max-width: 800px; margin-inline: auto;
+  }
+  .eyebrow {
+    font: 600 12px/1 ui-sans-serif, system-ui, sans-serif;
+    letter-spacing: 0.14em; text-transform: uppercase; color: var(--amber);
+    margin-bottom: 14px;
+  }
+  h1 { font-size: clamp(24px, 4.2vw, 34px); letter-spacing: -0.02em; margin-bottom: 12px; }
+  .sub { color: var(--dim); font-size: 15px; margin-bottom: 30px; max-width: 62ch; }
+  .panel {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 14px; padding: 22px; margin-bottom: 20px;
+  }
+  .panel h2 {
+    font-size: 12px; letter-spacing: 0.07em; text-transform: uppercase;
+    color: var(--dim); margin-bottom: 14px;
+  }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+  button {
+    background: transparent; color: var(--text); border: 1px solid var(--border);
+    border-radius: 999px; padding: 7px 15px; font: 500 13px/1 inherit; cursor: pointer;
+  }
+  button[aria-pressed="true"] { background: var(--amber); color: #0b0c0f; border-color: var(--amber); }
+  button:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+  .status { font-variant-numeric: tabular-nums; color: var(--dim); font-size: 13px; }
+  .hint { font-size: 13.5px; color: var(--dim); margin-top: 10px; }
+
+  /* Dwell targets created by tagWords(). The fill is the dwell progress the
+     engine reports — the visual contract between the access layer and the
+     reading surface. */
+  .ra-dwell-word {
+    position: relative; border-radius: 3px;
+    background-image: linear-gradient(
+      to right,
+      color-mix(in oklab, #ffc400 40%, transparent) calc(var(--dwell-progress, 0) * 100%),
+      transparent calc(var(--dwell-progress, 0) * 100%)
+    );
+  }
+  /* Focus marker: only ONE word may show it, and it must not be confused with
+     the read-along highlight (which is the karaoke position). */
+  .ra-dwell-word[data-dwell-focus] {
+    outline: 1px dashed color-mix(in oklab, #ffc400 65%, transparent);
+    outline-offset: 2px;
+  }
+  /* A target that has fired shows no fill until the signal leaves it. */
+  .ra-dwell-word.ra-spent { background-image: none; }
+
+  body[data-scanning] .ra-dwell-word[data-dwell-focus] {
+    background-color: color-mix(in oklab, #ffc400 24%, transparent);
+  }
+
+  read-along { display: block; }
+  .reading-text { font-size: 17.5px; line-height: 1.95; }
+
+  .log {
+    font: 12px/1.6 ui-monospace, monospace; color: var(--dim);
+    max-height: 150px; overflow-y: auto; white-space: pre-wrap;
+  }
+  .keymap kbd {
+    font: 11px ui-monospace, monospace; background: #23262c;
+    border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px;
+  }
+  .diagram { font: 12px/1.7 ui-monospace, monospace; color: var(--dim); }
+  .diagram b { color: var(--amber); font-weight: 600; }
+</style>
+</head>
+<body>
+<p class="eyebrow">Open source · MIT · two libraries, one interface</p>
+<h1>Driving a reading surface without a mouse</h1>
+<p class="sub">A person using a switch, a gaze tracker, or an EMG channel cannot click a word.
+Below, the access layer turns their signal into dwell targets on the reading surface — rest on a
+word and the reading starts from there. Neither library knows about the other's internals.</p>
+
+<div class="panel">
+  <h2>How the two layers compose</h2>
+  <div class="diagram">
+    <b>signal</b> (switch / gaze / EMG / keys)<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;↓ FOCUS · SELECT · CANCEL<br>
+    <b>access-input</b> — dwell engine, scan timing, debounce<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;↓ activation(tokenIndex)<br>
+    <b>read-along</b> — karaoke highlight, speech, word-level seek<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;↓ activeToken<br>
+    <b>feedback</b> — the reading position itself
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Input</h2>
+  <div class="row">
+    <button id="m-pointer" aria-pressed="true">Pointer (dwell)</button>
+    <button id="m-switch" aria-pressed="false">Single switch (scan)</button>
+    <button id="m-keyboard" aria-pressed="false">Keyboard (arrows)</button>
+    <button id="m-external" aria-pressed="false">External device</button>
+  </div>
+  <div class="row">
+    <label class="status">Dwell <input id="dwell-range" type="range" min="100" max="1200" step="50" value="600"> <span id="dwell-val">600ms</span></label>
+    <button id="pause-btn" aria-pressed="false">Pause (kill switch)</button>
+  </div>
+  <div class="row">
+    <span class="status" id="stats">activations 0 · dwell 600ms</span>
+    <span class="status" id="rakestate">read-along: idle</span>
+  </div>
+  <p class="hint" id="mode-hint">Rest the pointer on a word until the amber fill completes — the reading starts from that word.</p>
+  <div class="row keymap" id="ext-controls" hidden>
+    <span class="status">External device simulated:</span>
+    <button id="ext-next">focus next word</button>
+    <button id="ext-select">select</button>
+    <button id="ext-cancel">cancel</button>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Reading surface — the actual component</h2>
+  <read-along id="reader" rate="0.95" seekable>
+    <h3 style="font-size:19px;margin-bottom:10px">Reading, for people who need the words to keep up</h3>
+    <p class="reading-text">Reading while listening helps because the eye and the ear reinforce each other. The words stay visible while the voice moves through them. For a reader who needs support, that pairing is not a convenience — it is the difference between finishing the page and giving up on it. The technique is well studied and the finding is consistent: comprehension improves most when the highlighting follows the voice word by word.</p>
+    <p class="reading-text">What has been missing is a way to reach it without a mouse. Rest on a word and the reading begins there.</p>
+  </read-along>
+</div>
+
+<div class="panel">
+  <h2>Event log</h2>
+  <div class="log" id="log"></div>
+</div>
+
+<script type="module">
+import { DwellEngine, SignalBridge, PointerSource, SwitchSource, KeyboardSource, ExternalSource, tagWords }
+  from '../src/index.js';
+import { ReadAlongInputHost } from '../src/read-along.js';
+
+// Load read-along from the CDN so this demo runs as a static page with no
+// build step — the two libraries are independently published.
+await import('https://cdn.jsdelivr.net/npm/@designesy/read-along@0.1.2/src/read-along.js');
+
+const reader = document.getElementById('reader');
+const logEl = document.getElementById('log');
+const statsEl = document.getElementById('stats');
+const raStateEl = document.getElementById('rakestate');
+const dwellRange = document.getElementById('dwell-range');
+const dwellVal = document.getElementById('dwell-val');
+const pauseBtn = document.getElementById('pause-btn');
+const extControls = document.getElementById('ext-controls');
+
+const log = (msg) => {
+  const t = new Date().toLocaleTimeString('en-US', { hour12: false });
+  logEl.textContent = `${t}  ${msg}\n` + logEl.textContent;
+};
+
+let host = null, source = null, bridge = null, mode = 'pointer';
+let external = null, extIndex = -1;
+
+/**
+ * ORDERING — the one subtle thing about this integration.
+ *
+ * read-along builds its highlight ranges from the text nodes present when it
+ * prepares, and it prepares on connect. tagWords() REPLACES those text nodes
+ * with wrapped spans. So tagging after connect leaves read-along holding
+ * ranges that point at detached nodes — the highlight would silently stop
+ * painting.
+ *
+ * The adapter handles this: it tags first, then tells read-along to re-prepare
+ * so its ranges are rebuilt against the new nodes. Doing it here, once, before
+ * anything plays.
+ */
+function buildHost() {
+  // Tag the words as dwell targets.
+  const words = tagWords(reader);
+
+  // Rebuild read-along's ranges against the (now wrapped) text nodes. The
+  // component prepares lazily via a private flag; clearing it and re-running
+  // the prepare pass keeps the highlight aligned with the new DOM. This is the
+  // documented integration point between the two libraries.
+  reader._prepared = false;
+  reader._prepare();
+
+  return words;
+}
+
+const words = buildHost();
+log(`tagged ${words.length} word targets on the reading surface`);
+
+function readAlongState() {
+  const s = reader.state;
+  const tok = reader.activeToken;
+  return `read-along: ${s}${tok >= 0 ? ` · word ${tok + 1}` : ''}`;
+}
+
+function activate(tokenIndex, meta) {
+  const w = words[tokenIndex];
+  log(`ACTIVATE "${w?.text ?? '?'}" (token ${tokenIndex}, via ${meta?.via ?? '?'}) → seek + speak`);
+  clearSpent();
+}
+
+function rebuild() {
+  host?.stop();
+  bridge?.stop();
+  source?.stop();
+  document.body.removeAttribute('data-scanning');
+  extControls.hidden = mode !== 'external';
+
+  const dwell = new DwellEngine({
+    dwellMs: Number(dwellRange.value),
+    lockOnMs: 150,
+    onProgress: (id, r) => {
+      const el = reader.querySelector(`[data-dwell-target="${id}"]`);
+      if (el) el.style.setProperty('--dwell-progress', String(r));
+    },
+    onActivate: (id) => {
+      const el = reader.querySelector(`[data-dwell-target="${id}"]`);
+      if (el) el.classList.add('ra-spent');
+      el?.style.removeProperty('--dwell-progress');
+    },
+    onCancel: (id) => {
+      const el = reader.querySelector(`[data-dwell-target="${id}"]`);
+      el?.classList.remove('ra-spent');
+      el?.style.removeProperty('--dwell-progress');
+    },
+  });
+
+  const common = {
+    onFocus: (id) => {
+      for (const el of reader.querySelectorAll('[data-dwell-focus]')) {
+        el.removeAttribute('data-dwell-focus');
+      }
+      if (id) {
+        reader.querySelector(`[data-dwell-target="${id}"]`)?.setAttribute('data-dwell-focus', '');
+      }
+      // Focus moved on: the previous word's fill is stale.
+      for (const el of reader.querySelectorAll('[data-dwell-target]')) {
+        if (el.getAttribute('data-dwell-target') !== id) {
+          el.style.removeProperty('--dwell-progress');
+        }
+      }
+    },
+  };
+
+  if (mode === 'pointer') {
+    source = new PointerSource(reader);
+    bridge = new SignalBridge({ source, dwell, mode: 'dwell', ...common });
+  } else if (mode === 'switch') {
+    document.body.setAttribute('data-scanning', '');
+    source = new SwitchSource({ keys: [' ', 'Enter'], autoScan: true, scanMs: 900, firstItemDelayMs: 1200 });
+    source.attach(reader);
+    bridge = new SignalBridge({ source, dwell, mode: 'direct', ...common });
+  } else if (mode === 'keyboard') {
+    source = new KeyboardSource(reader);
+    bridge = new SignalBridge({ source, dwell, mode: 'direct', ...common });
+  } else {
+    external = new ExternalSource();
+    extIndex = -1;
+    source = external;
+    bridge = new SignalBridge({ source, dwell, mode: 'dwell', ...common });
+  }
+
+  /**
+   * THE COMPOSITION POINT: an input activation becomes a read-along seek.
+   *
+   * Order matters here, and it is the whole reason this integration is worth
+   * demonstrating. read-along's seekToToken() calls _stop() internally, which
+   * tears down the highlighter — so calling seekToToken() on an idle element
+   * leaves it playing but with no active word. The reliable sequence is:
+   *
+   *   1. play()  — binds the engine and builds the highlight state
+   *   2. on the next frame, seekToToken(i) — restarts from the chosen word
+   *
+   * Deferring the seek one frame lets play() finish binding before the seek
+   * stops and re-speaks. Calling them back-to-back loses the highlight.
+   */
+  const userActivate = bridge.onActivate;
+  bridge.onActivate = (id, meta) => {
+    userActivate?.(id, meta);
+    const i = Number(String(id).replace(/^w/, ''));
+    if (Number.isNaN(i) || !words[i]) return;
+
+    if (reader.state !== 'playing') reader.play();
+    requestAnimationFrame(() => {
+      reader.seekToToken(i);
+      log(`  → reader.seekToToken(${i}) state=${reader.state}`);
+    });
+  };
+
+  host = { dwell, stop: () => { bridge?.stop(); source?.stop(); } };
+  bridge.start();
+  updateStats();
+  log(`mode → ${mode}`);
+}
+
+function updateStats() {
+  const s = host?.dwell?.stats ?? { activations: 0, dwellMs: 600 };
+  statsEl.textContent = `activations ${s.activations} · dwell ${s.dwellMs}ms`;
+  raStateEl.textContent = readAlongState();
+}
+
+function clearSpent() {
+  for (const el of reader.querySelectorAll('.ra-spent')) el.classList.remove('ra-spent');
+}
+
+dwellRange.addEventListener('input', () => {
+  dwellVal.textContent = `${dwellRange.value}ms`;
+  rebuild();
+});
+pauseBtn.addEventListener('click', () => {
+  const d = host.dwell;
+  if (d.paused) {
+    d.resume();
+    pauseBtn.setAttribute('aria-pressed', 'false');
+    pauseBtn.textContent = 'Pause (kill switch)';
+    log('RESUMED');
+  } else {
+    d.pause();
+    pauseBtn.setAttribute('aria-pressed', 'true');
+    pauseBtn.textContent = 'Paused — press to resume';
+    log('PAUSED — all activation stopped');
+  }
+});
+
+const modeButtons = {
+  pointer: document.getElementById('m-pointer'),
+  switch: document.getElementById('m-switch'),
+  keyboard: document.getElementById('m-keyboard'),
+  external: document.getElementById('m-external'),
+};
+const hints = {
+  pointer: 'Rest the pointer on a word until the amber fill completes — the reading starts from that word.',
+  switch: 'Auto-scan is running. Press Space to choose, then Space again to pick the word.',
+  keyboard: 'Use arrows or Tab to move, Enter to select. Home/End jump to the ends.',
+  external: 'A device outside the page drives it: focus, select, cancel. This is the BCI/EMG path.',
+};
+for (const [name, btn] of Object.entries(modeButtons)) {
+  btn.addEventListener('click', () => {
+    mode = name;
+    for (const [n, b] of Object.entries(modeButtons)) b.setAttribute('aria-pressed', String(n === name));
+    document.getElementById('mode-hint').textContent = hints[name];
+    rebuild();
+  });
+}
+
+// External-device controls: the adapter contract a BCI/EMG bridge would call.
+document.getElementById('ext-next').addEventListener('click', () => {
+  if (!external) return;
+  const els = [...reader.querySelectorAll('[data-dwell-target]')];
+  extIndex = (extIndex + 1) % els.length;
+  external.focus(els[extIndex].getAttribute('data-dwell-target'));
+});
+document.getElementById('ext-select').addEventListener('click', () => {
+  if (!external || extIndex < 0) return;
+  const els = [...reader.querySelectorAll('[data-dwell-target]')];
+  external.select(els[extIndex].getAttribute('data-dwell-target'));
+});
+document.getElementById('ext-cancel').addEventListener('click', () => external?.cancel('device'));
+
+/**
+ * THE HEARTBEAT. The dwell engine does not read a clock — the HOST ticks it.
+ * A pointer that stops moving still needs the dwell to advance (a user
+ * holding still IS dwelling), so the demo runs a frame-cadence heartbeat
+ * rather than relying on pointer events.
+ *
+ * rAF is the right cadence: it is paused in background tabs (so a hidden tab
+ * cannot advance a dwell) and its timestamp is the same clock the gap guard
+ * inspects. The 250ms stats poll is separate and only paints the readout.
+ */
+let lastTick = performance.now();
+function heartbeat(now) {
+  if (host?.dwell) {
+    // Guard: if rAF was paused (hidden tab), the gap guard in the engine will
+    // see this jump and abandon the attempt — which is the correct behavior.
+    host.dwell.tick(now);
+    host.dwell.hold(now);
+  }
+  lastTick = now;
+  requestAnimationFrame(heartbeat);
+}
+requestAnimationFrame(heartbeat);
+
+// Keep the read-along state readout live.
+setInterval(updateStats, 250);
+
+rebuild();
+</script>
+</body>
+</html>

@@ -4,7 +4,9 @@
 
 Zero dependencies. MIT. Runs in the browser, testable in Node.
 
-**[Try the live demo →](https://le-vai.github.io/access-input/demo/)**
+**[Try the live demo →](https://le-vai.github.io/access-input/demo/)** · **[The read-along integration →](https://le-vai.github.io/access-input/demo/read-along.html)**
+
+*(The second demo is the whole point of this package: a person using a switch, gaze tracker, or EMG channel drives a real [`<read-along>`](https://github.com/LE-VAI/read-along) element. Rest on a word and the reading starts there. Neither library knows the other's internals — they compose through the published APIs.)*
 
 https://raw.githubusercontent.com/LE-VAI/access-input/main/docs/assets/demo.mp4
 
@@ -114,6 +116,30 @@ python -m http.server 8795
 ```
 
 The demo switches live between pointer-dwell, single-switch auto-scan, and keyboard, over both a reading surface and a plain four-cell grid — to show the input layer does not care what the content is. Watch the amber ring fill as you rest on a word: that fill is the dwell, and the word activates when it completes.
+
+## The read-along integration
+
+The adapter drives a real `<read-along>` element with any source — the composition the whole package exists to make possible:
+
+```js
+import { ReadAlongInputHost } from 'access-input/read-along.js';
+import { SwitchSource, tagWords } from 'access-input';
+
+// Tag the words first...
+tagWords(document.querySelector('read-along'));
+// ...then let read-along rebuild its highlight ranges against the new nodes.
+// (It caches ranges from the text nodes present at prepare time; wrapping
+// replaces those nodes, so a re-prepare keeps the karaoke highlight aligned.)
+el._prepared = false;
+el._prepare();
+
+const host = new ReadAlongInputHost(el, {
+  source: new SwitchSource({ keys: [' '], autoScan: true }),
+});
+await host.start();
+```
+
+An activation becomes a word-level seek; read-along's `activeToken` reports the reading position back, so a gaze or EEG layer can use it as feedback. Two independently published libraries, no shared internals.
 
 ## Tests
 
