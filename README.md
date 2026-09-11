@@ -8,6 +8,10 @@ Zero dependencies. MIT. Runs in the browser, testable in Node.
 
 *(The second demo is the whole point of this package: a person using a switch, gaze tracker, or EMG channel drives a real [`<read-along>`](https://github.com/LE-VAI/read-along) element. Rest on a word and the reading starts there. Neither library knows the other's internals — they compose through the published APIs.)*
 
+https://raw.githubusercontent.com/LE-VAI/access-input/main/docs/assets/demo-readalong.mp4
+
+*(33s — the amber dwell fill is the access layer; the blue karaoke highlight is the reading layer. Both running at once.)*
+
 https://raw.githubusercontent.com/LE-VAI/access-input/main/docs/assets/demo.mp4
 
 *(53s — dwell activation on a reading surface, then single-switch scanning and keyboard access on the same interface. [Download the MP4](docs/assets/demo.mp4) if it doesn't play inline.)*
