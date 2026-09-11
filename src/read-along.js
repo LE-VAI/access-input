@@ -27,9 +27,22 @@ import { DwellEngine } from './dwell.js';
 import { SignalBridge } from './sources.js';
 import { tagWords, TARGET_ATTR, WORD_CLASS } from './words.js';
 
-/** Default dwell for word-by-word reading: shorter than a control, because
- *  reading is a flow activity and every word should not cost a second. */
+/**
+ * Default dwell for word-by-word reading. 600ms is the evidence-based
+ * optimum from the Burnham 2025 systematic review + meta-analyses (500-600ms
+ * balances speed and accuracy); Majaranta & MacKenzie put the false-selection
+ * threshold at ~1000ms and "enough" for simple tasks at 700ms. Reading is a
+ * flow activity, so the low end of that band is the right default.
+ */
 const READING_DWELL_MS = 600;
+
+/**
+ * Lock-on gate for reading. A signal sweeping across prose crosses several
+ * words per second; without an entry gate every one of them starts a dwell.
+ * 150ms is Microsoft's documented gaze-onset window (150-250ms) for telling
+ * "intentionally staring" apart from "merely glancing".
+ */
+const READING_LOCK_ON_MS = 150;
 
 export class ReadAlongInputHost {
   /**
@@ -49,8 +62,10 @@ export class ReadAlongInputHost {
 
     this.dwell = new DwellEngine({
       dwellMs: options.dwellMs ?? READING_DWELL_MS,
+      lockOnMs: options.lockOnMs ?? READING_LOCK_ON_MS,
       adaptive: options.adaptive !== false,
       onAdapt: options.onAdapt || null,
+      onPhase: options.onPhase || null,
     });
 
     this.bridge = new SignalBridge({
@@ -133,6 +148,20 @@ export class ReadAlongInputHost {
     }
     el.style.setProperty('--dwell-progress', String(ratio));
   }
+
+  /** Clear a word's dwell fill (used on cancel and on departure). */
+  clearProgress(targetId) {
+    this._el(targetId)?.style.removeProperty('--dwell-progress');
+  }
+
+  /**
+   * Global kill switch — passes straight through to the engine. Every
+   * platform ships one (Microsoft "Pause eye control", Apple "Pause Dwell",
+   * eViacam "No click") because a user reading or watching must be able to
+   * stop accidental selections without leaving the page.
+   */
+  pause() { this.dwell.pause(); }
+  resume() { this.dwell.resume(); }
 
   _el(targetId) {
     if (!this.el.querySelector) return null;

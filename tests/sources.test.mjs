@@ -1,10 +1,12 @@
 /**
- * sources.test.mjs — source capabilities + bridge wiring.
+ * sources.test.mjs — source capabilities + bridge wiring + switch/keyboard QoL.
  *
- * The load-bearing rule: a CONTINUOUS source dwells, a DIRECT source does
- * not. Getting that wrong means either a switch user has to hold a press for
- * a second (nonsense — the press already happened) or a gaze user's
- * activations fire on every pass-over.
+ * The load-bearing rules:
+ *   - a CONTINUOUS source dwells, a DIRECT source does not
+ *   - the bridge CHAINS onto engine callbacks (it used to clobber them)
+ *   - a switch scan PAUSES after a selection
+ *   - presses are DEBOUNCED (bounce + accidental press)
+ *   - a held key moves focus ONCE (no auto-repeat for assistive targets)
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -17,6 +19,8 @@ import {
 } from '../src/sources.js';
 import { DwellEngine } from '../src/dwell.js';
 
+// -- capabilities + bridge --------------------------------------------------
+
 test('ExternalSource declares continuous + direct capabilities', () => {
   const src = new ExternalSource();
   assert.equal(src.capabilities.continuous, true);
@@ -26,7 +30,7 @@ test('ExternalSource declares continuous + direct capabilities', () => {
 test('a continuous-only source drives dwell; its select is not used', () => {
   const events = [];
   const src = new ExternalSource();
-  const dwell = new DwellEngine({ dwellMs: 1000 });
+  const dwell = new DwellEngine({ dwellMs: 1000, lockOnMs: 0 });
   new SignalBridge({
     source: src,
     dwell,
@@ -45,7 +49,7 @@ test('a direct source activates on select without dwelling', () => {
   const events = [];
   const src = new SwitchSource({ keys: [' '] });
   const dwell = new DwellEngine({ dwellMs: 1000 });
-  const bridge = new SignalBridge({
+  new SignalBridge({
     source: src,
     dwell,
     onActivate: (id, meta) => events.push({ id, via: meta.via }),
@@ -92,8 +96,6 @@ test('stopping the bridge stops the source and clears the dwell', () => {
   const dwell = new DwellEngine({ dwellMs: 1000 });
   const bridge = new SignalBridge({ source: src, dwell });
   src.start();
-  // A direct-capable source reports focus as telemetry without dwelling, so
-  // start a dwell explicitly to prove stop() clears it.
   dwell.enter('w1', 0);
   assert.equal(dwell.target, 'w1');
   bridge.stop();
@@ -109,8 +111,6 @@ test('InputSource base class documents an inactive default', () => {
 });
 
 test('a direct source that also reports focus does not dwell', () => {
-  // An external device naming its target AND selecting: the select is the
-  // choice, the focus is just telemetry. No dwell must start.
   const events = [];
   const src = new ExternalSource(); // declares both continuous and direct
   const dwell = new DwellEngine({ dwellMs: 1000 });
@@ -136,6 +136,7 @@ test('the bridge chains onto engine callbacks instead of clobbering them', () =>
   const src = new ExternalSource();
   const dwell = new DwellEngine({
     dwellMs: 1000,
+    lockOnMs: 0,
     onProgress: (id, ratio) => hostProgress.push(ratio),
   });
   new SignalBridge({
@@ -163,4 +164,108 @@ test('the bridge chains onto engine cancel handlers too', () => {
   dwell.enter('w9', 0);
   dwell.cancel('escape');
   assert.deepEqual(hostCancels, ['w9'], 'host cancel handler must survive the bridge');
+});
+
+// -- switch behaviour -------------------------------------------------------
+
+/** A fake DOM root for switch tests: N targets, no real elements needed. */
+function fakeRoot(ids) {
+  return {
+    querySelectorAll: () => ids.map((id) => ({
+      getAttribute: (k) => (k === 'data-dwell-target' ? id : null),
+    })),
+  };
+}
+
+test('SWITCH: the scan pauses after a selection', () => {
+  // A scan that keeps running through a selection means the next press lands
+  // on a target the user never saw highlighted.
+  const selects = [];
+  const src = new SwitchSource({ keys: [' '], autoScan: true, scanMs: 50, debounceMs: 0, accidentalPressMs: 0, now: () => 1000 });
+  src.attach(fakeRoot(['a', 'b', 'c']));
+  src.onSelect = (id) => selects.push(id);
+  src._active = true;
+
+  src.press(0);      // index -1 → first press advances to 'a'
+  src.press(10);     // selects 'a'
+  assert.deepEqual(selects, ['a']);
+  assert.equal(src.scanning, false, 'scan must stop after a selection');
+  assert.equal(src._scanPaused, true);
+});
+
+test('SWITCH: a press while paused resumes rather than selecting again', () => {
+  const selects = [];
+  // autoScan OFF for this test: we are testing the press semantics, and a
+  // live interval would keep the process alive past the assertions.
+  const src = new SwitchSource({ keys: [' '], autoScan: true, scanMs: 50, debounceMs: 0, accidentalPressMs: 0, now: () => 1000 });
+  src.attach(fakeRoot(['a', 'b']));
+  src.onSelect = (id) => selects.push(id);
+  src._active = true;
+  src._scanPaused = true; // simulate a scan that stopped after a selection
+  src.press(0);           // a press while paused must RESUME, not select
+  assert.equal(selects.length, 0, 'resume must not select');
+  assert.equal(src._scanPaused, false, 'the press resumed the scan');
+  src.stop();
+});
+
+test('SWITCH: presses are debounced (bounce produces one action)', () => {
+  const src = new SwitchSource({ keys: [' '], debounceMs: 50, accidentalPressMs: 0, now: () => 1000 });
+  src.attach(fakeRoot(['a', 'b', 'c']));
+  src._active = true;
+  src.press(0);    // advances to 'a'
+  src.press(10);   // 10ms later — bounce, ignored
+  src.press(20);   // still bouncing, ignored
+  assert.equal(src._index, 0, 'bounce must not advance the scan');
+});
+
+test('SWITCH: a press right after a selection is treated as accidental', () => {
+  const selects = [];
+  const src = new SwitchSource({ keys: [' '], debounceMs: 0, accidentalPressMs: 400, now: () => 1000 });
+  src.attach(fakeRoot(['a', 'b', 'c']));
+  src.onSelect = (id) => selects.push(id);
+  src._active = true;
+  src.press(0);     // advance to 'a'
+  src.press(10);    // select 'a'
+  assert.equal(selects.length, 1);
+  src.press(50);    // 40ms later — inside the accidental window
+  assert.equal(selects.length, 1, 'accidental double-press must not select');
+  assert.equal(src._index, 0, 'and must not advance either');
+});
+
+test('SWITCH: reverse scanning is supported', () => {
+  const focus = [];
+  const src = new SwitchSource({ reverse: true, now: () => 1000 });
+  src.attach(fakeRoot(['a', 'b', 'c']));
+  src.onFocus = (id) => focus.push(id);
+  src._active = true;
+  src._index = 2;
+  src._advance(0);
+  assert.equal(focus[0], 'b', 'reverse scan goes backwards');
+});
+
+test('SWITCH: maxCycles stops the scan after the configured passes', () => {
+  const src = new SwitchSource({ autoScan: true, scanMs: 50, maxCycles: 2, now: () => 1000 });
+  src.attach(fakeRoot(['a', 'b']));
+  src._active = true;
+  src._startTimer(50);
+  // Two full passes of 2 items each = 4 advances to reach the cap.
+  for (let i = 0; i < 5; i++) src._advance(i);
+  assert.equal(src.scanning, false, 'scan must stop at the cycle cap');
+});
+
+test('SWITCH: pauseScan and resumeScan control the timer', () => {
+  const states = [];
+  const src = new SwitchSource({ autoScan: true, scanMs: 50, now: () => 1000, onScanState: (r) => states.push(r) });
+  src.attach(fakeRoot(['a', 'b']));
+  src._active = true;
+  src._startTimer(50);
+  assert.equal(src.scanning, true);
+  src.pauseScan();
+  assert.equal(src.scanning, false, 'paused: the timer is released');
+  // resumeScan re-arms only while the source is active and autoScan is on.
+  src.resumeScan();
+  assert.equal(src.scanning, true);
+  src.stop();
+  assert.equal(src.scanning, false, 'stop releases the timer');
+  assert.deepEqual(states, [false, true]);
 });

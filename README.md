@@ -113,15 +113,28 @@ npm test
 ## API
 
 ```js
-new DwellEngine({ dwellMs, minDwellMs, maxDwellMs, graceMs, adaptive,
-                  onProgress, onActivate, onCancel, onAdapt })
+new DwellEngine({
+  dwellMs,          // 600  — evidence-based default (Burnham 2025 meta-analysis)
+  lockOnMs,         // 150  — entry gate; a glance shorter than this never dwells
+  lockoutMs,        // 200  — min gap between two fires on the same target
+  repeatIntervalMs, // 1000 — auto-repeat period for `repeat` targets
+  minDwellMs, maxDwellMs,   // adaptive bounds (300 / 1500)
+  graceMs,          // 140  — slip forgiveness
+  adaptive,         // true
+  leaveToRearm,     // true — a fired target must be LEFT before it can fire again
+  onProgress, onActivate, onCancel, onAdapt, onPhase,
+})
   .enter(targetId, tMs)   // signal arrived (or returned) on a target
   .hold(tMs)              // heartbeat while on target
   .leave(tMs)             // signal left; grace window begins
   .tick(tMs)              // host heartbeat to expire the grace window
   .cancel(reason)         // explicit cancel
+  .pause() / .resume()    // global kill switch (all platforms ship one)
+  .setRepeatTargets(ids)  // opt targets into timed auto-repeat
   .reportUndo()           // host: the user undid the last activation
-  .stats                  // { dwellMs, activations, undos, abandons }
+  .isSpent(id)            // has this target fired and not yet been re-armed?
+  .phase                  // 'idle' | 'lockon' | 'dwell' | 'spent'
+  .stats                  // { dwellMs, lockOnMs, activations, undos, abandons, spent }
 ```
 
 Time is always supplied by the caller (`performance.now()` in a browser, an injected clock in tests) — the engine never reads a clock itself, so its behaviour is fully deterministic.

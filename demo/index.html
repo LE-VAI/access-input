@@ -45,15 +45,19 @@
   /* Dwell targets: the word wrappers the adapter creates. */
   .ra-dwell-word {
     position: relative; border-radius: 3px;
-    transition: background-color 120ms linear;
-    /* The dwell ring: a background that fills left-to-right as progress
-       advances. Driven by --dwell-progress, set by the adapter. */
+    /* The dwell ring fills left-to-right as progress advances. Driven by
+       --dwell-progress, set by the adapter. Nothing is shown during lock-on
+       (the variable is simply unset), because an indicator that appears while
+       the signal is only glancing past is itself noise. */
     background-image: linear-gradient(
       to right,
       color-mix(in oklab, var(--amber) 38%, transparent) calc(var(--dwell-progress, 0) * 100%),
       transparent calc(var(--dwell-progress, 0) * 100%)
     );
   }
+  /* A target that has already fired shows no fill until the signal leaves it
+     (leave-to-rearm). The class is set by the demo on activation. */
+  .ra-dwell-word.ra-spent { background-image: none; }
   .ra-dwell-word[data-dwell-focus] {
     outline: 1px solid color-mix(in oklab, var(--amber) 55%, transparent);
   }
@@ -102,8 +106,13 @@ The point is that nothing above this layer needs to know which one you used.</p>
     <label class="status">Adaptive <input id="adaptive" type="checkbox" checked></label>
   </div>
   <div class="row">
+    <label class="status">Lock-on <input id="lockon-range" type="range" min="0" max="400" step="25" value="150"> <span id="lockon-val">150ms</span></label>
+    <label class="status">Leave-to-rearm <input id="rearm" type="checkbox" checked></label>
+  </div>
+  <div class="row">
     <span class="status" id="stats">activations 0 · undos 0 · abandons 0 · dwell 700ms</span>
     <button id="undo">Report undo</button>
+    <button id="pause-btn" aria-pressed="false">Pause (kill switch)</button>
   </div>
   <p class="hint" id="mode-hint">Rest the pointer on a word until the amber fill completes.</p>
 </div>
@@ -138,6 +147,10 @@ const statsEl = document.getElementById('stats');
 const dwellRange = document.getElementById('dwell-range');
 const dwellVal = document.getElementById('dwell-val');
 const adaptiveBox = document.getElementById('adaptive');
+const lockonRange = document.getElementById('lockon-range');
+const lockonVal = document.getElementById('lockon-val');
+const rearmBox = document.getElementById('rearm');
+const pauseBtn = document.getElementById('pause-btn');
 
 const log = (msg) => {
   const t = new Date().toLocaleTimeString('en-US', { hour12: false });
@@ -177,6 +190,13 @@ function clearProgress(id) {
   if (el) el.style.removeProperty('--dwell-progress');
 }
 
+/** Clear every spent marker — used when focus moves on. */
+function clearSpent(exceptId) {
+  for (const el of document.querySelectorAll('.ra-spent')) {
+    if (el.getAttribute('data-dwell-target') !== exceptId) el.classList.remove('ra-spent');
+  }
+}
+
 /** Clear every painted ring — used when focus moves on. */
 function clearAllProgress(exceptId) {
   for (const el of document.querySelectorAll('[data-dwell-target]')) {
@@ -213,13 +233,31 @@ function rebuild() {
 
   dwell = new DwellEngine({
     dwellMs: Number(dwellRange.value),
+    lockOnMs: Number(lockonRange.value),
     adaptive: adaptiveBox.checked,
+    leaveToRearm: rearmBox.checked,
     onProgress: (id, r) => {
       const el = document.querySelector(`[data-dwell-target="${id}"]`);
       if (el) el.style.setProperty('--dwell-progress', String(r));
     },
-    onActivate: (id) => clearProgress(id),
-    onCancel: (id) => clearProgress(id),
+    onActivate: (id) => {
+      // Mark the word spent so it shows no ring until the signal leaves —
+      // the visual half of leave-to-rearm. Set the class BEFORE clearing the
+      // fill: the class is what suppresses the fill for a spent word.
+      const el = document.querySelector(`[data-dwell-target="${id}"]`);
+      if (el && dwell.leaveToRearm) el.classList.add('ra-spent');
+      clearProgress(id);
+    },
+    onCancel: (id) => {
+      clearProgress(id);
+      document.querySelector(`[data-dwell-target="${id}"]`)?.classList.remove('ra-spent');
+    },
+    onPhase: (phase, id) => {
+      // A target that leaves the spent state is armed again — drop the marker.
+      if (phase !== 'spent' && id) {
+        document.querySelector(`[data-dwell-target="${id}"]`)?.classList.remove('ra-spent');
+      }
+    },
     onActivate: () => {},
     onAdapt: (ms, meta) => log(`ADAPT dwell ${meta.from}ms → ${ms}ms`),
   });
@@ -269,6 +307,29 @@ dwellRange.addEventListener('input', () => {
   dwell.dwellMs = Number(dwellRange.value);
   dwell.reset();
   updateStats();
+});
+lockonRange.addEventListener('input', () => {
+  lockonVal.textContent = `${lockonRange.value}ms`;
+  dwell.lockOnMs = Number(lockonRange.value);
+});
+rearmBox.addEventListener('change', () => {
+  dwell.leaveToRearm = rearmBox.checked;
+  if (!rearmBox.checked) clearSpent();
+});
+pauseBtn.addEventListener('click', () => {
+  if (dwell.paused) {
+    dwell.resume();
+    pauseBtn.setAttribute('aria-pressed', 'false');
+    pauseBtn.textContent = 'Pause (kill switch)';
+    log('RESUMED — input active');
+  } else {
+    dwell.pause();
+    pauseBtn.setAttribute('aria-pressed', 'true');
+    pauseBtn.textContent = 'Paused — press to resume';
+    clearAllProgress();
+    clearSpent();
+    log('PAUSED — all activation stopped');
+  }
 });
 adaptiveBox.addEventListener('change', () => { dwell.adaptive = adaptiveBox.checked; });
 

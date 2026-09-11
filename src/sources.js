@@ -66,6 +66,25 @@ const hasWindow = typeof window !== 'undefined';
  * PointerSource — mouse, touch, or head-pointer. The reference implementation:
  * it is the access method everyone already has, so it is also the fallback
  * when no assistive source is present.
+ *
+ * TWO DESIGN DECISIONS worth stating, both from the high-frequency-input
+ * literature and the mature eye-gaze systems:
+ *
+ *  1. Position is SAMPLED ONCE PER rAF FRAME, not acted on per event. A 120Hz
+ *     eye tracker produces ~2 pointermove events per rendered frame; doing the
+ *     hit-test in the handler wastes work and can thrash focus between targets
+ *     that are 1px apart. The last position is stored and the hit-test runs at
+ *     frame cadence. (Coalesced pointermove events also report the LAST
+ *     position as their target, so the event stream cannot be used to see the
+ *     path anyway.)
+ *
+ *  2. LEAVE IS SPATIAL, measured against a RADIUS around the target's centre,
+ *     not the element's bounding box. Every mature system expresses jitter
+ *     tolerance in pixels — eViacam's "dwell area", Mind Express's "jitter
+ *     margin", OptiKey's separate lock-on and fixation radii. A bounding-box
+ *     test re-arms the moment the pointer crosses a 1px gap between two words,
+ *     which is exactly how one landing produces two activations on adjacent
+ *     targets.
  */
 export class PointerSource extends InputSource {
   static get capabilities() {
@@ -76,13 +95,24 @@ export class PointerSource extends InputSource {
    * @param {HTMLElement} root element whose [data-dwell-target] children are targets
    * @param {object} [options]
    * @param {Function} [options.now] clock, defaults to performance.now
+   * @param {number} [options.leaveRadiusPx=24] how far the pointer must move
+   *   from a target's centre before it counts as having left. 24px is the
+   *   WCAG 2.5.8 target-size unit, so this is exactly one target unit of
+   *   slack — enough to absorb tremor, small enough that moving to a
+   *   neighbouring word is unambiguous.
    */
   constructor(root, options = {}) {
     super(options);
     this.root = root;
     this._now = options.now || (() => performance.now());
+    this._leaveRadiusPx = options.leaveRadiusPx ?? 24;
     this._bound = false;
     this._handlers = {};
+    this._x = null;          // latest pointer position (client coords)
+    this._y = null;
+    this._raf = 0;
+    this._lastId = null;     // last target reported (to emit only on change)
+    this._center = new Map(); // target id -> {x, y} centre, cached per frame
   }
 
   /** Nearest dwell target under a point, or null. */
@@ -94,6 +124,60 @@ export class PointerSource extends InputSource {
     return target.getAttribute('data-dwell-target');
   }
 
+  /**
+   * The current position is still "on" `id` if it is inside the target's box
+   * OR within the leave radius of its centre. The radius is what makes a
+   * 1-2px gap between adjacent words NOT count as a departure.
+   */
+  _stillOn(id, x, y) {
+    const el = this.root?.querySelector?.(`[data-dwell-target="${id}"]`);
+    if (!el) return false;
+    const r = el.getBoundingClientRect?.();
+    if (!r) return false;
+    // Inside the box → definitely still on it.
+    if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return true;
+    // Outside the box but within the radius of the centre → still on it.
+    const cx = r.left + r.width / 2;
+    const cy = r.top + r.height / 2;
+    const dx = x - cx;
+    const dy = y - cy;
+    return Math.hypot(dx, dy) <= this._leaveRadiusPx;
+  }
+
+  /** One hit-test per frame, using the latest sampled position. */
+  _sample() {
+    this._raf = 0;
+    if (!this._active || this._x === null) return;
+    const t = this._now();
+
+    // Hysteresis: if we are currently on a target and the pointer has not
+    // meaningfully left it, keep reporting that SAME target. This is what
+    // makes micro-movement within a word a no-op instead of a re-focus.
+    //
+    // The repeat is deliberate: a continuous source must keep reporting its
+    // position, because the dwell engine needs to know the signal is still
+    // THERE (it re-enters on each report and holds while it continues). A
+    // source that reported focus only on change would leave the engine with
+    // no way to distinguish "still resting here" from "gone" — the dwell
+    // would stall after one frame.
+    if (this._lastId !== null && this._stillOn(this._lastId, this._x, this._y)) {
+      this.onFocus?.(this._lastId, t);
+      this._schedule();
+      return;
+    }
+
+    const id = this._targetAt(this._x, this._y);
+    this._lastId = id;
+    this.onFocus?.(id, t);
+    this._schedule();
+  }
+
+  _schedule() {
+    if (this._raf) return;
+    if (typeof requestAnimationFrame !== 'function') return;
+    this._raf = requestAnimationFrame(() => this._sample());
+  }
+
   async start() {
     if (this._bound || !this.root) return;
     this._bound = true;
@@ -101,8 +185,9 @@ export class PointerSource extends InputSource {
 
     const move = (ev) => {
       if (!this._active) return;
-      const id = this._targetAt(ev.clientX, ev.clientY);
-      this.onFocus?.(id, this._now());
+      this._x = ev.clientX;
+      this._y = ev.clientY;
+      this._schedule();
     };
     const down = (ev) => {
       if (!this._active) return;
@@ -123,6 +208,11 @@ export class PointerSource extends InputSource {
 
   stop() {
     this._active = false;
+    // Cancel any pending frame first — cleanup must not depend on _bound.
+    if (this._raf && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(this._raf);
+    }
+    this._raf = 0;
     if (!this._bound) return;
     const { move, down, key } = this._handlers;
     this.root?.removeEventListener('pointermove', move);
@@ -150,6 +240,7 @@ export class KeyboardSource extends InputSource {
     this._now = options.now || (() => performance.now());
     this._index = -1;
     this._bound = false;
+    this._keysDown = new Set(); // see the repeat guard below
   }
 
   _targets() {
@@ -169,6 +260,26 @@ export class KeyboardSource extends InputSource {
     if (this._bound || !this.root) return;
     this._bound = true;
     this._active = true;
+
+    /**
+     * KEY REPEAT IS SUPPRESSED BY DEFAULT. For an assistive target list a
+     * held arrow key should move focus exactly once — auto-repeat is a
+     * text-editing convention that actively harms users with motor
+     * impairments, who cannot release a key quickly. (Grid 3 models a long
+     * hold as a separate, opt-in gesture rather than a repeat.)
+     *
+     * The guard does not rely on `event.repeat` alone: on Windows and Linux,
+     * when several keys are held, the most recently pressed key reports
+     * `repeat: false` incorrectly. Tracking which keys are down catches that.
+     */
+    const isRepeat = (ev) => {
+      if (ev.repeat) return true;
+      if (this._keysDown.has(ev.key)) return true;
+      this._keysDown.add(ev.key);
+      return false;
+    };
+    const onUp = (ev) => this._keysDown.delete(ev.key);
+
     const handler = (ev) => {
       if (!this._active) return;
       const t = this._now();
@@ -177,16 +288,33 @@ export class KeyboardSource extends InputSource {
         case 'ArrowDown':
         case 'Tab':
           ev.preventDefault();
+          if (isRepeat(ev)) return;
           this._focusIndex(this._index + 1, t);
           break;
         case 'ArrowLeft':
         case 'ArrowUp':
           ev.preventDefault();
-          this._focusIndex(this._index - 1, t);
+          if (isRepeat(ev)) return;
+          // Wraparound: from the first item, left goes to the last. APG marks
+          // this Optional and permits either behaviour; wrapping is chosen
+          // here because a dead end costs an assistive user extra keystrokes.
+          this._focusIndex(this._index <= 0 ? -1 : this._index - 1, t);
+          break;
+        case 'Home':
+          ev.preventDefault();
+          if (isRepeat(ev)) return;
+          this._focusIndex(0, t);
+          break;
+        case 'End':
+          ev.preventDefault();
+          if (isRepeat(ev)) return;
+          this._focusIndex(this._targets().length - 1, t);
           break;
         case 'Enter':
         case ' ':
           ev.preventDefault();
+          // A held Enter/Space must not fire SELECT repeatedly.
+          if (isRepeat(ev)) return;
           if (this._index >= 0) {
             const targets = this._targets();
             const id = targets[this._index]?.getAttribute('data-dwell-target');
@@ -201,13 +329,21 @@ export class KeyboardSource extends InputSource {
       }
     };
     this._handler = handler;
-    if (hasWindow) window.addEventListener('keydown', handler);
+    this._handlerUp = onUp;
+    if (hasWindow) {
+      window.addEventListener('keydown', handler);
+      window.addEventListener('keyup', onUp);
+    }
   }
 
   stop() {
     this._active = false;
+    this._keysDown.clear();
     if (!this._bound) return;
-    if (hasWindow) window.removeEventListener('keydown', this._handler);
+    if (hasWindow) {
+      window.removeEventListener('keydown', this._handler);
+      window.removeEventListener('keyup', this._handlerUp);
+    }
     this._bound = false;
   }
 }
@@ -215,13 +351,43 @@ export class KeyboardSource extends InputSource {
 /**
  * SwitchSource — a single binary switch driven by ANY key, a click, or an
  * external device event. One-switch access has exactly two gestures: advance
- * and select. Timing (auto-scan) is the host's job; this source only reports
- * presses, which keeps it honest about what the hardware actually provides.
+ * and select.
+ *
+ * Three behaviours here are not optional niceties — they are what separates a
+ * usable single-switch interface from an exhausting one, and every mature AAC
+ * system ships them:
+ *
+ *  1. THE SCAN PAUSES AFTER A SELECTION. A scan that keeps marching through a
+ *     selection means the user's next press lands on a target they never saw
+ *     highlighted. Grid 3, TouchChat and PRC-Saltillo all stop the scan on
+ *     activation and require an explicit resume (PRC-Saltillo calls it
+ *     "Auto Restart", and it is configurable precisely because the default is
+ *     NOT to restart).
+ *
+ *  2. PRESSES ARE DEBOUNCED. Physical switches bounce, and a held key repeats.
+ *     Grid 3 exposes `Ignore presses` (accidental) and `Ignore repeat presses`
+ *     as two distinct settings; TouchChat's `Release Time` disables buttons
+ *     for a period after each activation. Both gates are implemented here.
+ *
+ *  3. THE FIRST ITEM GETS EXTRA TIME. Android Switch Access documents a
+ *     "Delay on first item" so the user can orient before the scan starts.
+ *     Without it the scan is already moving before the user has looked at the
+ *     screen.
  *
  * @param {object} [options]
  * @param {string[]} [options.keys=[' ']] keys that count as a press
  * @param {boolean} [options.autoScan=false] emit periodic advances on its own
- * @param {number} [options.scanMs=1200] auto-scan interval
+ * @param {number} [options.scanMs=1000] auto-scan interval (Liberator's
+ *   published default for a small grid; PRC-Saltillo allows 0.2-10s)
+ * @param {number} [options.firstItemDelayMs=1000] extra pause on item 0
+ * @param {number} [options.debounceMs=50] hardware-bounce floor
+ * @param {number} [options.accidentalPressMs=400] ignore a second press this
+ *   soon after one that already selected (prevents double-activation)
+ * @param {boolean} [options.pauseScanOnSelect=true] stop the scan after a
+ *   selection until the user presses again (or the host calls resumeScan())
+ * @param {number} [options.maxCycles=0] stop after this many full passes
+ *   (0 = scan forever); Android and Grid 3 both cap this
+ * @param {boolean} [options.reverse=false] scan backwards
  */
 export class SwitchSource extends InputSource {
   static get capabilities() {
@@ -232,11 +398,22 @@ export class SwitchSource extends InputSource {
     super(options);
     this.keys = options.keys ?? [' '];
     this.autoScan = options.autoScan ?? false;
-    this.scanMs = options.scanMs ?? 1200;
+    this.scanMs = options.scanMs ?? 1000;
+    this.firstItemDelayMs = options.firstItemDelayMs ?? 1000;
+    this.debounceMs = options.debounceMs ?? 50;
+    this.accidentalPressMs = options.accidentalPressMs ?? 400;
+    this.pauseScanOnSelect = options.pauseScanOnSelect !== false;
+    this.maxCycles = options.maxCycles ?? 0;
+    this.reverse = options.reverse ?? false;
     this._now = options.now || (() => performance.now());
     this._index = -1;
     this._timer = null;
     this._bound = false;
+    this._lastPressAt = -Infinity;  // debounce
+    this._lastSelectAt = -Infinity; // accidental-press gate
+    this._cycles = 0;
+    this._scanPaused = false;
+    this.onScanState = options.onScanState || null; // (running: boolean)
   }
 
   _targets() {
@@ -246,23 +423,86 @@ export class SwitchSource extends InputSource {
   /** Attach the DOM subtree whose targets this switch scans. */
   attach(root) { this._root = root; }
 
+  /** True while the auto-scan is actually running (timer armed, not paused). */
+  get scanning() { return this._timer !== null; }
+
   _advance(tMs) {
     const targets = this._targets();
     if (!targets.length) return;
-    this._index = (this._index + 1) % targets.length;
+    const step = this.reverse ? -1 : 1;
+    const next = this._index + step;
+    if (next >= targets.length) {
+      this._cycles++;
+      if (this.maxCycles > 0 && this._cycles >= this.maxCycles) {
+        this.pauseScan();
+        return;
+      }
+    }
+    this._index = ((next % targets.length) + targets.length) % targets.length;
     this.onFocus?.(targets[this._index].getAttribute('data-dwell-target'), tMs);
   }
 
-  /** One switch press: advance the scan, or select if a target is focused. */
+  /**
+   * One switch press.
+   *
+   * The order of the gates matters: bounce is filtered first (a double-report
+   * of ONE physical press must never count as two advances), then the
+   * accidental-press gate (a second press right after a selection is almost
+   * always unintended), then the actual behaviour — resume a paused scan, or
+   * advance, or select.
+   */
   press(tMs) {
     if (!this._active) return;
+
+    // Gate 1: hardware bounce / key repeat.
+    if (tMs - this._lastPressAt < this.debounceMs) return;
+    this._lastPressAt = tMs;
+
+    // A paused scan resumes on the next press rather than advancing — the
+    // user needs to see where the highlight is before it moves again.
+    if (this._scanPaused) {
+      this.resumeScan();
+      return;
+    }
+
+    // Gate 2: a press immediately after a selection is treated as unintended.
+    if (tMs - this._lastSelectAt < this.accidentalPressMs) return;
+
     if (this._index < 0) {
       this._advance(tMs);
       return;
     }
     const targets = this._targets();
     const id = targets[this._index]?.getAttribute('data-dwell-target');
-    if (id) this.onSelect?.(id, tMs);
+    if (id) {
+      this._lastSelectAt = tMs;
+      this.onSelect?.(id, tMs);
+      // Gate 3: stop the scan so the next press is deliberate.
+      if (this.pauseScanOnSelect && this.autoScan) this.pauseScan();
+    }
+  }
+
+  /** Stop the auto-scan, keeping the highlight where it is. */
+  pauseScan() {
+    if (this._timer) {
+      clearInterval(this._timer);
+      this._timer = null;
+    }
+    this._scanPaused = true;
+    this.onScanState?.(false);
+  }
+
+  /** Restart the auto-scan from the current highlight. */
+  resumeScan() {
+    this._scanPaused = false;
+    if (!this.autoScan || !this._active) return;
+    this._startTimer(this.scanMs);
+    this.onScanState?.(true);
+  }
+
+  _startTimer(interval) {
+    if (this._timer) clearInterval(this._timer);
+    this._timer = setInterval(() => this._advance(this._now()), interval);
   }
 
   async start() {
@@ -280,16 +520,26 @@ export class SwitchSource extends InputSource {
     };
     if (hasWindow) window.addEventListener('keydown', this._handler);
     if (this.autoScan) {
-      this._timer = setInterval(() => this._advance(this._now()), this.scanMs);
+      // First item gets the orientation delay before the regular cadence.
+      this._startTimer(this.firstItemDelayMs);
+      this._scanPaused = false;
+      this.onScanState?.(true);
     }
   }
 
   stop() {
     this._active = false;
-    if (!this._bound) return;
-    if (hasWindow) window.removeEventListener('keydown', this._handler);
+    // Cleanup must happen even if start() was never called (or was already
+    // stopped): a timer started directly via _startTimer would otherwise keep
+    // firing forever and hold the process open. Caught by a test suite that
+    // refused to exit.
     if (this._timer) clearInterval(this._timer);
     this._timer = null;
+    this._scanPaused = false;
+    if (!this._bound) return;
+    if (hasWindow && this._handler) {
+      window.removeEventListener('keydown', this._handler);
+    }
     this._bound = false;
   }
 }
