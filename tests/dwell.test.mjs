@@ -250,6 +250,73 @@ test('REPEAT is opt-in: a normal target still requires a departure', () => {
   assert.equal(events.activations.length, 1, 'non-repeat target must not auto-fire');
 });
 
+// -- repeat target registration ---------------------------------------------
+
+test('setRepeatTargets is ADDITIVE, not replacing', () => {
+  // Regression: a second call used to silently drop every previously
+  // registered target, which is easy to hit when hosts register targets as
+  // they are created.
+  const { engine } = harness({ dwellMs: 100, lockOnMs: 0 });
+  engine.setRepeatTargets(['volume-up']);
+  engine.setRepeatTargets(['volume-down']);
+  assert.equal(engine._repeatTargets.has('volume-up'), true, 'first call must survive');
+  assert.equal(engine._repeatTargets.has('volume-down'), true);
+});
+
+test('setRepeatTargets accepts object and entry-list shapes', () => {
+  const { engine } = harness({ lockOnMs: 0 });
+  engine.setRepeatTargets({ 'vol-up': 400, 'vol-down': 400 });
+  assert.equal(engine.repeatIntervalFor('vol-up'), 400);
+  engine.setRepeatTargets([{ id: 'scroll', intervalMs: 250 }]);
+  assert.equal(engine.repeatIntervalFor('scroll'), 250);
+  engine.setRepeatTargets('single');
+  assert.equal(engine._repeatTargets.has('single'), true);
+});
+
+test('per-target repeat interval overrides the default', () => {
+  const { engine } = harness({ lockOnMs: 0 });
+  engine.setRepeatTargets(['a']);
+  engine.setRepeatTargets({ b: 200 });
+  assert.equal(engine.repeatIntervalFor('a'), engine.repeatIntervalMs, 'a uses the default');
+  assert.equal(engine.repeatIntervalFor('b'), 200, 'b uses its own');
+});
+
+test('a faster per-target interval actually fires sooner', () => {
+  const { engine, events } = harness({ dwellMs: 100, repeatIntervalMs: 2000, lockOnMs: 0 });
+  engine.setRepeatTargets({ fast: 300 });
+  engine.enter('fast', 0);
+  advance(engine, 0, 150);          // first fire
+  assert.equal(events.activations.length, 1);
+  // The DEFAULT is 2000ms, so only the per-target 300ms can explain a
+  // second fire this soon.
+  advance(engine, 150, 500);
+  assert.equal(events.activations.length, 2, 'per-target interval was used');
+});
+
+test('clearRepeatTargets removes registrations', () => {
+  const { engine } = harness({ lockOnMs: 0 });
+  engine.setRepeatTargets(['x', 'y']);
+  engine.clearRepeatTargets('x');
+  assert.equal(engine._repeatTargets.has('x'), false);
+  assert.equal(engine._repeatTargets.has('y'), true);
+});
+
+test('resetRepeatTargets clears everything', () => {
+  const { engine } = harness({ lockOnMs: 0 });
+  engine.setRepeatTargets(['x'], { replace: true });
+  engine.resetRepeatTargets();
+  assert.equal(engine._repeatTargets.size, 0);
+  assert.equal(engine._repeatIntervals.size, 0);
+});
+
+test('setRepeatTargets with replace:true clears first', () => {
+  const { engine } = harness({ lockOnMs: 0 });
+  engine.setRepeatTargets(['old']);
+  engine.setRepeatTargets(['new'], { replace: true });
+  assert.equal(engine._repeatTargets.has('old'), false);
+  assert.equal(engine._repeatTargets.has('new'), true);
+});
+
 // -- clock-gap guard (hidden tab / sleep) -----------------------------------
 
 test('CLOCK GAP: a hidden tab does not produce a phantom activation', () => {

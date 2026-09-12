@@ -143,6 +143,7 @@ export class DwellEngine {
     this._spent = new Set();
     this._lastFireAt = new Map();
     this._repeatTargets = new Set();
+    this._repeatIntervals = new Map(); // id -> intervalMs override
 
     // Adaptation bookkeeping
     this._activations = 0;
@@ -183,10 +184,63 @@ export class DwellEngine {
    * target re-fires on a timer while continuously held instead of requiring a
    * departure — the Mind Express `Repeat dwell` model. Without this,
    * leave-to-rearm makes a volume button unusable.
-   * @param {string|string[]} ids
+   *
+   * ADDITIVE, not replacing: a host typically registers targets as they are
+   * created, and an earlier version of this method silently dropped every
+   * previously registered target on the second call. Pass `{ replace: true }`
+   * when you genuinely want to clear the set.
+   *
+   * A per-target interval is supported because repeat rates differ by
+   * control: a scroll button wants a fast repeat, a destructive action wants
+   * a slow one. Pass a number as the value to override the default interval:
+   *
+   *   dwell.setRepeatTargets(['scroll-up', 'scroll-down']);        // default rate
+   *   dwell.setRepeatTargets({ 'volume-up': 400 });                // 400ms
+   *   dwell.setRepeatTargets(['x'], { replace: true });            // clear first
+   *
+   * Accepted shapes: a string, an array of strings, an object of
+   * id -> intervalMs, or an array of { id, intervalMs }.
+   *
+   * @param {string|string[]|object|Array<{id: string, intervalMs?: number}>} ids
+   * @param {{replace?: boolean}} [opts]
    */
-  setRepeatTargets(ids) {
-    this._repeatTargets = new Set(Array.isArray(ids) ? ids : [ids]);
+  setRepeatTargets(ids, opts = {}) {
+    if (opts.replace) {
+      this._repeatTargets = new Set();
+      this._repeatIntervals = new Map();
+    }
+    const add = (id, intervalMs) => {
+      if (typeof id !== 'string' || !id) return;
+      this._repeatTargets.add(id);
+      if (Number.isFinite(intervalMs) && intervalMs > 0) {
+        this._repeatIntervals.set(id, intervalMs);
+      }
+    };
+
+    if (typeof ids === 'string') {
+      add(ids);
+    } else if (Array.isArray(ids)) {
+      for (const entry of ids) {
+        if (typeof entry === 'string') add(entry);
+        else if (entry && typeof entry === 'object') add(entry.id, entry.intervalMs);
+      }
+    } else if (ids && typeof ids === 'object') {
+      for (const [id, intervalMs] of Object.entries(ids)) add(id, intervalMs);
+    }
+  }
+
+  /** Remove targets from the repeat set. */
+  clearRepeatTargets(ids) {
+    const list = Array.isArray(ids) ? ids : [ids];
+    for (const id of list) {
+      this._repeatTargets.delete(id);
+      this._repeatIntervals.delete(id);
+    }
+  }
+
+  /** The repeat interval a target will use (per-target, else the default). */
+  repeatIntervalFor(id) {
+    return this._repeatIntervals.get(id) ?? this.repeatIntervalMs;
   }
 
   /** True if a target is currently spent (fired, awaiting departure). */
@@ -343,7 +397,9 @@ export class DwellEngine {
       // waits for a departure (leave-to-rearm) and does nothing here.
       if (this._repeatTargets.has(this._target)) {
         const since = tMs - this._enteredAt;
-        if (since >= this.repeatIntervalMs) {
+        // Per-target rate: a scroll button wants a faster repeat than a
+        // destructive action wants.
+        if (since >= this.repeatIntervalFor(this._target)) {
           this._fireActivation(tMs, { repeat: true });
         }
       }
@@ -438,6 +494,12 @@ export class DwellEngine {
     this._eventsSinceAdapt = 0;
     this._spent.clear();
     this._lastFireAt.clear();
+  }
+
+  /** Forget repeat registrations (a new surface is being wired). */
+  resetRepeatTargets() {
+    this._repeatTargets.clear();
+    this._repeatIntervals.clear();
   }
 
   // -- internals -----------------------------------------------------------
