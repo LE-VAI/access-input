@@ -4,7 +4,7 @@
 
 Zero dependencies. MIT. Runs in the browser, testable in Node.
 
-**[Try the live demo →](https://le-vai.github.io/access-input/demo/)** · **[The read-along integration →](https://le-vai.github.io/access-input/demo/read-along.html)**
+**[Try the live demo →](https://le-vai.github.io/access-input/demo/)** · **[The read-along integration →](https://le-vai.github.io/access-input/demo/read-along.html)** · **[The full stack, consent-gated →](https://le-vai.github.io/access-input/demo/stack.html)**
 
 *(The second demo is the whole point of this package: a person using a switch, gaze tracker, or EMG channel drives a real [`<read-along>`](https://github.com/LE-VAI/read-along) element. Rest on a word and the reading starts there. Neither library knows the other's internals — they compose through the published APIs.)*
 
@@ -120,6 +120,22 @@ python -m http.server 8795
 ```
 
 The demo switches live between pointer-dwell, single-switch auto-scan, and keyboard, over both a reading surface and a plain four-cell grid — to show the input layer does not care what the content is. Watch the amber ring fill as you rest on a word: that fill is the dwell, and the word activates when it completes.
+
+## The full stack, running
+
+[demo/stack.html](demo/stack.html) wires all three libraries together with nothing but their published CDNs — no build step, no shared internals:
+
+```
+neural-consent   decides whether the signal may be read
+      ↓
+access-input     turns the signal into a selection (dwell / scan / keys / external device)
+      ↓
+read-along       reads from the chosen word, and reports the position back
+```
+
+The gate is enforced by the input layer, so it bites in the right place: while consent is withheld the surface is visibly inert and dwelling on a word does nothing; grant it and the same gesture reads from that word; withdraw it mid-dwell and the activation in flight is cancelled.
+
+Verified in a real browser: blocked (`0` activations), granted (`1` activation, the reader seeked to the chosen token), and mid-dwell withdrawal (`0` activations where `1` was expected).
 
 ## Consent gating (optional)
 

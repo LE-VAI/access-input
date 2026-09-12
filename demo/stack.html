@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reading with a consent gate — three libraries, one interface</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@designesy/read-along@0.1.3/src/read-along.css">
+<style>
+  :root {
+    --bg: #0b0c0f;
+    --surface: #181a1e;
+    --border: #2a2d33;
+    --text: #f5f5f7;
+    --dim: #9a9aa5;
+    --amber: #ffc400;
+    --ok: #34c759;
+    --blocked: #ff453a;
+    --ra-highlight: rgb(255 196 0 / 0.42);
+    --ra-accent: #ffc400;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 16px/1.65 ui-sans-serif, system-ui, sans-serif;
+    padding: clamp(18px, 4.5vw, 52px);
+    max-width: 860px; margin-inline: auto;
+  }
+  .eyebrow {
+    font: 600 12px/1 ui-sans-serif, system-ui, sans-serif;
+    letter-spacing: 0.14em; text-transform: uppercase; color: var(--amber);
+    margin-bottom: 14px;
+  }
+  h1 { font-size: clamp(23px, 4vw, 32px); letter-spacing: -0.02em; margin-bottom: 12px; }
+  .sub { color: var(--dim); font-size: 15px; margin-bottom: 28px; max-width: 64ch; }
+
+  .panel {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 14px; padding: 22px; margin-bottom: 18px;
+  }
+  .panel h2 {
+    font: 600 12px/1 inherit; letter-spacing: 0.07em; text-transform: uppercase;
+    color: var(--dim); margin-bottom: 14px;
+  }
+
+  /* -- the stack diagram ---------------------------------------------- */
+  .stack { font: 12.5px/1.85 ui-monospace, monospace; }
+  .stack .layer {
+    display: grid; grid-template-columns: 130px 1fr auto;
+    gap: 10px; align-items: center;
+    padding: 7px 0; border-bottom: 1px solid var(--border);
+  }
+  .stack .layer:last-child { border-bottom: 0; }
+  .stack .name { color: var(--amber); font-weight: 600; }
+  .stack .what { color: var(--dim); }
+  .stack .state {
+    font-weight: 600; padding: 2px 9px; border-radius: 999px;
+    border: 1px solid var(--border); font-size: 11px; white-space: nowrap;
+  }
+  .stack .state[data-live="yes"] { color: var(--ok); border-color: color-mix(in oklab, var(--ok) 45%, transparent); }
+  .stack .state[data-live="no"] { color: var(--blocked); border-color: color-mix(in oklab, var(--blocked) 45%, transparent); }
+
+  /* -- consent gate ---------------------------------------------------- */
+  .gate {
+    display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+    padding: 14px 16px; border-radius: 11px; margin-bottom: 14px;
+    border: 1px solid color-mix(in oklab, var(--blocked) 35%, transparent);
+    background: color-mix(in oklab, var(--blocked) 7%, transparent);
+  }
+  .gate[data-granted="yes"] {
+    border-color: color-mix(in oklab, var(--ok) 35%, transparent);
+    background: color-mix(in oklab, var(--ok) 7%, transparent);
+  }
+  .gate .verdict { font-weight: 620; }
+  .gate .verdict[data-granted="no"] { color: var(--blocked); }
+  .gate .verdict[data-granted="yes"] { color: var(--ok); }
+  .gate .why { color: var(--dim); font-size: 13px; }
+
+  button {
+    background: transparent; color: var(--text); border: 1px solid var(--border);
+    border-radius: 999px; padding: 7px 15px; font: 500 13px/1 inherit; cursor: pointer;
+  }
+  button:hover { border-color: var(--dim); }
+  button:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+  button[aria-pressed="true"] { background: var(--amber); color: #0b0c0f; border-color: var(--amber); }
+  button[data-primary] { border-color: color-mix(in oklab, var(--ok) 50%, transparent); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+  .status { font-variant-numeric: tabular-nums; color: var(--dim); font-size: 13px; }
+  .hint { font-size: 13.5px; color: var(--dim); margin-top: 10px; }
+
+  /* -- dwell targets --------------------------------------------------- */
+  .ra-dwell-word {
+    position: relative; border-radius: 3px;
+    background-image: linear-gradient(
+      to right,
+      color-mix(in oklab, #ffc400 40%, transparent) calc(var(--dwell-progress, 0) * 100%),
+      transparent calc(var(--dwell-progress, 0) * 100%)
+    );
+  }
+  .ra-dwell-word[data-dwell-focus] {
+    outline: 1px dashed color-mix(in oklab, #ffc400 65%, transparent);
+    outline-offset: 2px;
+  }
+  .ra-dwell-word.ra-spent { background-image: none; }
+  body[data-scanning] .ra-dwell-word[data-dwell-focus] {
+    background-color: color-mix(in oklab, #ffc400 24%, transparent);
+  }
+  /* When consent is withheld the surface is visibly inert — not merely
+     non-functional. A user should be able to SEE that nothing is being read. */
+  body[data-gated] .ra-dwell-word { background-image: none; outline: none; }
+  body[data-gated] read-along { opacity: 0.55; filter: saturate(0.4); }
+
+  read-along { display: block; transition: opacity 180ms linear; }
+  .reading-text { font-size: 17.5px; line-height: 1.95; }
+
+  .log {
+    font: 12px/1.6 ui-monospace, monospace; color: var(--dim);
+    max-height: 160px; overflow-y: auto; white-space: pre-wrap;
+  }
+  kbd {
+    font: 11px ui-monospace, monospace; background: #23262c;
+    border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px;
+  }
+  .visually-hidden {
+    position: absolute; width: 1px; height: 1px; margin: -1px;
+    overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  }
+</style>
+</head>
+<body data-gated>
+<p class="eyebrow">Three libraries · one interface · all published</p>
+<h1>Reading with a consent gate</h1>
+<p class="sub">The full stack running at once. A signal source drives the reading surface, and a
+consent record decides whether the signal may be read at all. Nothing is transmitted by any layer —
+that is the claim, and you can verify it in your network panel.</p>
+
+<div class="panel">
+  <h2>The stack, live</h2>
+  <div class="stack" id="stack"></div>
+</div>
+
+<div class="panel">
+  <h2>Consent — the gate</h2>
+  <div class="gate" id="gate">
+    <span class="verdict" id="gateVerdict">Blocked</span>
+    <span class="why" id="gateWhy"></span>
+    <button id="grantBtn" data-primary>Grant: read my input signal</button>
+    <button id="withdrawBtn">Withdraw</button>
+    <button id="eraseBtn">Erase record</button>
+  </div>
+  <p class="hint" id="gateHint">
+    Nothing on this page can read your input until you grant it. Try dwelling on a word now — it will not respond.
+  </p>
+</div>
+
+<div class="panel">
+  <h2>Input</h2>
+  <div class="row">
+    <button id="m-pointer" aria-pressed="true">Pointer (dwell)</button>
+    <button id="m-switch" aria-pressed="false">Single switch (scan)</button>
+    <button id="m-keyboard" aria-pressed="false">Keyboard (arrows)</button>
+    <button id="m-external" aria-pressed="false">External device</button>
+  </div>
+  <div class="row">
+    <label class="status">Dwell <input id="dwell-range" type="range" min="100" max="1200" step="25" value="600" aria-label="Dwell time in milliseconds"> <span id="dwell-val">600ms</span></label>
+    <span class="status" id="stats">activations 0 · dwell 600ms</span>
+  </div>
+  <p class="hint" id="mode-hint">Rest the pointer on a word until the amber fill completes — the reading starts from that word.</p>
+  <div class="row" id="ext-controls" hidden>
+    <span class="status">External device simulated:</span>
+    <button id="ext-next">focus next word</button>
+    <button id="ext-select">select</button>
+    <button id="ext-cancel">cancel</button>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Reading surface — the real component</h2>
+  <read-along id="reader" rate="0.95" seekable>
+    <h3 style="font-size:19px;margin-bottom:10px">Reading, for people who need the words to keep up</h3>
+    <p class="reading-text">Reading while listening helps because the eye and the ear reinforce each other. The words stay visible while the voice moves through them. For a reader who needs support, that pairing is not a convenience — it is the difference between finishing the page and giving up on it.</p>
+    <p class="reading-text">What has been missing is a way to reach it without a mouse. Rest on a word and the reading begins there.</p>
+  </read-along>
+</div>
+
+<div class="panel">
+  <h2>Consent record on this device</h2>
+  <div class="log" id="consentFacts"></div>
+</div>
+
+<div class="panel">
+  <h2>Event log</h2>
+  <div class="log" id="log"></div>
+</div>
+<p class="visually-hidden" id="live" aria-live="polite"></p>
+
+<script type="module">
+// Three independently published packages, loaded from their CDNs. The demo runs
+// as a static page with no build step — which is the point: they compose
+// through public APIs and nothing else.
+import { DwellEngine, SignalBridge, PointerSource, SwitchSource, KeyboardSource, ExternalSource, tagWords }
+  from 'https://cdn.jsdelivr.net/npm/access-input@0.1.4/src/index.js';
+import { ConsentManager, PURPOSES, noticeVersion }
+  from 'https://cdn.jsdelivr.net/npm/neural-consent@0.1.0/src/index.js';
+await import('https://cdn.jsdelivr.net/npm/@designesy/read-along@0.1.3/src/read-along.js');
+
+const reader = document.getElementById('reader');
+const logEl = document.getElementById('log');
+const liveEl = document.getElementById('live');
+const stackEl = document.getElementById('stack');
+const gateEl = document.getElementById('gate');
+const gateVerdict = document.getElementById('gateVerdict');
+const gateWhy = document.getElementById('gateWhy');
+const gateHint = document.getElementById('gateHint');
+const statsEl = document.getElementById('stats');
+const dwellRange = document.getElementById('dwell-range');
+const dwellVal = document.getElementById('dwell-val');
+const extControls = document.getElementById('ext-controls');
+const consentFacts = document.getElementById('consentFacts');
+
+const PURPOSE = PURPOSES.ACQUIRE_SIGNAL.id;
+
+/**
+ * THE CONSENT GATE.
+ *
+ * This manager is passed to access-input's SignalBridge, which consults it
+ * before forwarding ANY event from the source. The bridge fails closed: no
+ * grant means the signal is never read, and a withdrawal mid-dwell cancels
+ * the activation in flight.
+ */
+const consent = new ConsentManager({ storage: localStorage, validDays: 365 });
+
+const log = (msg) => {
+  const t = new Date().toLocaleTimeString('en-US', { hour12: false });
+  logEl.textContent = `${t}  ${msg}\n` + logEl.textContent;
+};
+const announce = (m) => { liveEl.textContent = m; };
+
+let host = null, source = null, bridge = null, mode = 'pointer';
+let external = null, extIndex = -1;
+let words = [];
+
+// --- reading surface: tag first, then re-prepare read-along ----------------
+// tagWords REPLACES the text nodes read-along cached its ranges from, so the
+// component must re-prepare or the karaoke highlight silently stops painting.
+words = tagWords(reader);
+reader._prepared = false;
+reader._prepare();
+log(`tagged ${words.length} word targets`);
+
+// --- the stack readout -----------------------------------------------------
+function renderStack() {
+  const granted = consent.isGranted(PURPOSE);
+  const layers = [
+    { name: 'neural-consent', what: 'decides whether the signal may be read', live: granted },
+    { name: 'access-input', what: 'turns the signal into a selection', live: granted },
+    { name: 'read-along', what: 'reads from the chosen word', live: reader.state === 'playing' || granted },
+  ];
+  stackEl.textContent = '';
+  for (const l of layers) {
+    const row = document.createElement('div');
+    row.className = 'layer';
+    const n = document.createElement('span'); n.className = 'name'; n.textContent = l.name;
+    const w = document.createElement('span'); w.className = 'what'; w.textContent = l.what;
+    const s = document.createElement('span');
+    s.className = 'state';
+    s.dataset.live = l.live ? 'yes' : 'no';
+    s.textContent = l.live ? 'live' : 'blocked';
+    row.append(n, w, s);
+    stackEl.appendChild(row);
+  }
+}
+
+// --- consent UI ------------------------------------------------------------
+function renderConsent() {
+  const granted = consent.isGranted(PURPOSE);
+  const state = consent.stateOf(PURPOSE);
+
+  gateEl.dataset.granted = granted ? 'yes' : 'no';
+  gateVerdict.dataset.granted = granted ? 'yes' : 'no';
+  gateVerdict.textContent = granted ? 'Granted' : (state === 'withdrawn' ? 'Withdrawn' : 'Blocked');
+  gateWhy.textContent = granted
+    ? `until ${(consent.record.purposes[PURPOSE]?.validUntil ?? 'n/a').slice(0, 10)}`
+    : 'the input layer cannot read anything';
+
+  // The surface LOOKS inert when gated — a user should be able to see that
+  // nothing is being read, not merely infer it from a missing response.
+  document.body.toggleAttribute('data-gated', !granted);
+
+  gateHint.textContent = granted
+    ? 'Granted. Rest on a word and the reading starts there. Withdraw at any point — an in-flight dwell is cancelled immediately.'
+    : 'Nothing on this page can read your input until you grant it. Try dwelling on a word now — it will not respond.';
+
+  const r = consent.record;
+  consentFacts.textContent = [
+    `record     ${r.recordId.slice(0, 18)}…`,
+    `purpose    acquire_signal`,
+    `state      ${state ?? 'not decided'}`,
+    `recipients ${r.handling.recipientsDeclaration}`,
+    `storage    ${r.handling.storage}`,
+    `events     ${r.events.length}`,
+    `chain      ${r.verify().ok ? 'intact' : 'MODIFIED'}`,
+  ].join('\n');
+
+  renderStack();
+}
+
+document.getElementById('grantBtn').addEventListener('click', () => {
+  consent.grant(PURPOSE, { noticeVersion: noticeVersion(), language: 'en' });
+  log('CONSENT granted: acquire_signal');
+  announce('Consent granted.');
+});
+document.getElementById('withdrawBtn').addEventListener('click', () => {
+  if (!consent.isGranted(PURPOSE)) return;
+  consent.withdraw(PURPOSE);
+  log('CONSENT withdrawn — gate closed, any dwell in flight was cancelled');
+  announce('Consent withdrawn.');
+});
+document.getElementById('eraseBtn').addEventListener('click', () => {
+  consent.erase();
+  log('consent record erased');
+  announce('Record erased.');
+});
+consent.onChange(renderConsent);
+
+// --- the input stack -------------------------------------------------------
+function updateStats() {
+  const s = host?.dwell?.stats ?? { activations: 0, dwellMs: 600 };
+  statsEl.textContent = `activations ${s.activations} · dwell ${s.dwellMs}ms`;
+  renderStack();
+}
+
+function clearSpent() {
+  for (const el of reader.querySelectorAll('.ra-spent')) el.classList.remove('ra-spent');
+}
+
+function rebuild() {
+  bridge?.stop();
+  source?.stop();
+  document.body.removeAttribute('data-scanning');
+  extControls.hidden = mode !== 'external';
+
+  const dwell = new DwellEngine({
+    dwellMs: Number(dwellRange.value),
+    lockOnMs: 150,
+    onProgress: (id, r) => {
+      const el = reader.querySelector(`[data-dwell-target="${id}"]`);
+      if (el) el.style.setProperty('--dwell-progress', String(r));
+    },
+    onActivate: (id) => {
+      const el = reader.querySelector(`[data-dwell-target="${id}"]`);
+      if (el) el.classList.add('ra-spent');
+      el?.style.removeProperty('--dwell-progress');
+    },
+    onCancel: (id) => {
+      const el = reader.querySelector(`[data-dwell-target="${id}"]`);
+      el?.classList.remove('ra-spent');
+      el?.style.removeProperty('--dwell-progress');
+    },
+  });
+
+  const common = {
+    onFocus: (id) => {
+      for (const el of reader.querySelectorAll('[data-dwell-focus]')) el.removeAttribute('data-dwell-focus');
+      if (id) reader.querySelector(`[data-dwell-target="${id}"]`)?.setAttribute('data-dwell-focus', '');
+      for (const el of reader.querySelectorAll('[data-dwell-target]')) {
+        if (el.getAttribute('data-dwell-target') !== id) el.style.removeProperty('--dwell-progress');
+      }
+    },
+  };
+
+  if (mode === 'pointer') {
+    source = new PointerSource(reader);
+    bridge = new SignalBridge({ source, dwell, mode: 'dwell', ...common });
+  } else if (mode === 'switch') {
+    document.body.setAttribute('data-scanning', '');
+    source = new SwitchSource({ keys: [' ', 'Enter'], autoScan: true, scanMs: 900, firstItemDelayMs: 1200 });
+    source.attach(reader);
+    bridge = new SignalBridge({ source, dwell, mode: 'direct', ...common });
+  } else if (mode === 'keyboard') {
+    source = new KeyboardSource(reader);
+    bridge = new SignalBridge({ source, dwell, mode: 'direct', ...common });
+  } else {
+    external = new ExternalSource();
+    extIndex = -1;
+    source = external;
+    bridge = new SignalBridge({ source, dwell, mode: 'dwell', ...common });
+  }
+
+  /**
+   * THE TWO WIRES THAT MAKE THIS A STACK.
+   *
+   * 1. The consent gate goes to the BRIDGE, so it is enforced per event —
+   *    including a withdrawal mid-dwell.
+   * 2. An activation becomes a read-along seek, deferred one frame so
+   *    play() finishes binding before seekToToken restarts the speech.
+   */
+  const userActivate = bridge.onActivate;
+  bridge.onActivate = (id, meta) => {
+    userActivate?.(id, meta);
+    const i = Number(String(id).replace(/^w/, ''));
+    if (Number.isNaN(i) || !words[i]) return;
+    log(`ACTIVATE "${words[i].text}" (token ${i}, via ${meta?.via ?? '?'}) → seek`);
+    if (reader.state !== 'playing') reader.play();
+    requestAnimationFrame(() => reader.seekToToken(i));
+    clearSpent();
+  };
+
+  // Attach the gate AFTER the activation override so it wraps everything.
+  bridge.consent = consent;
+  bridge.consentPurpose = PURPOSE;
+
+  host = { dwell };
+  bridge.start();
+  updateStats();
+  log(`mode → ${mode}`);
+}
+
+dwellRange.addEventListener('input', () => {
+  dwellVal.textContent = `${dwellRange.value}ms`;
+  host?.dwell?.setDwell(Number(dwellRange.value));
+  updateStats();
+});
+
+const modeButtons = {
+  pointer: document.getElementById('m-pointer'),
+  switch: document.getElementById('m-switch'),
+  keyboard: document.getElementById('m-keyboard'),
+  external: document.getElementById('m-external'),
+};
+const hints = {
+  pointer: 'Rest the pointer on a word until the amber fill completes — the reading starts from that word.',
+  switch: 'Auto-scan is running. Press Space to choose, then Space again to pick the word.',
+  keyboard: 'Use arrows or Tab to move, Enter to select. Home/End jump to the ends.',
+  external: 'A device outside the page drives it: focus, select, cancel. This is the BCI/EMG path.',
+};
+for (const [name, btn] of Object.entries(modeButtons)) {
+  btn.addEventListener('click', () => {
+    mode = name;
+    for (const [n, b] of Object.entries(modeButtons)) b.setAttribute('aria-pressed', String(n === name));
+    document.getElementById('mode-hint').textContent = hints[name];
+    rebuild();
+  });
+}
+
+document.getElementById('ext-next').addEventListener('click', () => {
+  if (!external) return;
+  const els = [...reader.querySelectorAll('[data-dwell-target]')];
+  extIndex = (extIndex + 1) % els.length;
+  external.focus(els[extIndex].getAttribute('data-dwell-target'));
+});
+document.getElementById('ext-select').addEventListener('click', () => {
+  if (!external || extIndex < 0) return;
+  const els = [...reader.querySelectorAll('[data-dwell-target]')];
+  external.select(els[extIndex].getAttribute('data-dwell-target'));
+});
+document.getElementById('ext-cancel').addEventListener('click', () => external?.cancel('device'));
+
+/**
+ * The heartbeat. The dwell engine never reads a clock — the host ticks it, and
+ * a pointer that stops moving still needs hold() calls or the dwell stalls.
+ * rAF is the right cadence: it pauses in background tabs, which is exactly
+ * what the engine's clock-gap guard wants to see.
+ */
+function heartbeat(now) {
+  host?.dwell?.tick(now);
+  host?.dwell?.hold(now);
+  requestAnimationFrame(heartbeat);
+}
+requestAnimationFrame(heartbeat);
+
+setInterval(() => { updateStats(); if (reader.state === 'playing') renderStack(); }, 300);
+
+renderConsent();
+rebuild();
+</script>
+</body>
+</html>
