@@ -56,6 +56,13 @@
  * TIME IS ALWAYS SUPPLIED BY THE CALLER (performance.now() in a browser, an
  * injected clock in tests). The engine never reads a clock itself, so its
  * behaviour is fully deterministic and testable.
+ *
+ * ALL TIMES MUST COME FROM ONE CLOCK. Every method that takes a timestamp
+ * expects the same time base — mixing a device's own clock into enter() while
+ * ticking hold() with the host's clock will look like a stall to the
+ * clock-gap guard and abort valid dwells. If a source reports its own times,
+ * inject the host clock into it so both agree, or call rebaseline() after
+ * switching.
  */
 
 /** Progress callbacks are throttled — the UI ring does not need 60fps. */
@@ -247,6 +254,19 @@ export class DwellEngine {
   isSpent(id) { return this._spent.has(id); }
 
   /**
+   * Forget the heartbeat baseline.
+   *
+   * Call this when the host's clock changes — a source that reports device
+   * time being swapped for the host's clock, a resumed session after the page
+   * was frozen, or any other discontinuity. Without it, the first heartbeat
+   * after the switch appears as a multi-second stall and the clock-gap guard
+   * aborts an otherwise-valid dwell.
+   */
+  rebaseline(tMs) {
+    this._lastHeartbeatAt = Number.isFinite(tMs) ? tMs : -Infinity;
+  }
+
+  /**
    * Set the dwell duration from an explicit user choice.
    *
    * WCAG 2.2.1 (Timing Adjustable) requires that a user be able to adjust a
@@ -367,7 +387,25 @@ export class DwellEngine {
    */
   hold(tMs) {
     if (this._paused) return;
-    if (this._target === null || this._leftAt !== null) return;
+
+    // A heartbeat with no active target still proves the host is ALIVE, so it
+    // must refresh the clock-gap baseline before returning.
+    //
+    // Without this, any period with no target — including the exact state a
+    // consent gate creates while a grant is withheld — left the baseline
+    // stale, and the first hold(0) after the signal resumed looked like a
+    // multi-second gap and aborted the new dwell. The engine appeared broken
+    // for one attempt after every gated interval.
+    if (this._target === null) {
+      this._lastHeartbeatAt = tMs;
+      return;
+    }
+    if (this._leftAt !== null) {
+      // Away from the target, but still ticking: the grace window is the only
+      // thing that should expire here, so keep the baseline fresh too.
+      this._lastHeartbeatAt = tMs;
+      return;
+    }
 
     // Clock-gap guard. A heartbeat this far from the last one means the host
     // stopped ticking (hidden tab, sleep, a stalled device stream) — the

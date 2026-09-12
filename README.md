@@ -121,6 +121,29 @@ python -m http.server 8795
 
 The demo switches live between pointer-dwell, single-switch auto-scan, and keyboard, over both a reading surface and a plain four-cell grid — to show the input layer does not care what the content is. Watch the amber ring fill as you rest on a word: that fill is the dwell, and the word activates when it completes.
 
+## Consent gating (optional)
+
+Reading a signal IS the processing act, so that is where consent has to bite. `SignalBridge` accepts an optional gate — duck-typed, because this package has zero dependencies, so it is an interface rather than an import:
+
+```js
+import { ConsentManager, PURPOSES } from 'neural-consent';
+
+const consent = new ConsentManager({ storage: localStorage });
+new SignalBridge({
+  source, dwell,
+  consent,                                   // anything with isGranted(id)
+  consentPurpose: PURPOSES.ACQUIRE_SIGNAL.id,
+  onActivate: (id) => choose(id),
+});
+```
+
+Four properties make this a gate rather than a warning:
+
+- **Per-event, not per-session.** Consent can be withdrawn while the tool runs, so the check runs on every focus, select, and activation. A withdrawal cancels any dwell already in progress.
+- **Fails closed.** A gate that throws, or that lacks `isGranted`, means *no consent*. A broken gate must never be a permissive one.
+- **Cancel is never gated.** A user backing out must always work — including when consent itself is what they are backing out of.
+- **The clock must be shared.** If a source reports its own timestamps, inject the same clock the heartbeats use, or the engine's stall guard will read the mismatch as a gap. `rebaseline(t)` exists for switching clocks mid-session.
+
 ## The read-along integration
 
 The adapter drives a real `<read-along>` element with any source — the composition the whole package exists to make possible:

@@ -53,6 +53,8 @@ export class ReadAlongInputHost {
    * @param {boolean} [options.adaptive]
    * @param {Function} [options.onActivate] (tokenIndex, meta) — override the
    *   default seek behaviour (e.g. to log, or to drive something else)
+   * @param {object} [options.consent] optional consent gate (see SignalBridge)
+   * @param {string} [options.consentPurpose='acquire_signal']
    */
   constructor(el, options = {}) {
     this.el = el;
@@ -75,6 +77,11 @@ export class ReadAlongInputHost {
       onFocus: (id) => this._paintFocus(id),
       onProgress: (id, ratio) => this._paintProgress(id, ratio),
       onCancel: options.onCancel || null,
+      // A reading surface driven by neural or assistive input is exactly the
+      // case where consent must gate the signal — pass a gate through and the
+      // bridge enforces it per event.
+      consent: options.consent || null,
+      consentPurpose: options.consentPurpose,
     });
   }
 

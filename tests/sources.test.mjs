@@ -176,6 +176,181 @@ test('the bridge chains onto engine cancel handlers too', () => {
   assert.deepEqual(hostCancels, ['w9'], 'host cancel handler must survive the bridge');
 });
 
+// -- consent gate -----------------------------------------------------------
+
+/** A minimal gate stand-in — duck-typed, exactly as the bridge consumes it. */
+function fakeGate(granted = false) {
+  return {
+    _granted: granted,
+    isGranted() { return this._granted; },
+    grant() { this._granted = true; },
+    withdraw() { this._granted = false; },
+  };
+}
+
+test('CONSENT: no gate configured means the bridge works normally', () => {
+  const events = [];
+  const src = new ExternalSource();
+  const dwell = new DwellEngine({ dwellMs: 300, lockOnMs: 0 });
+  new SignalBridge({ source: src, dwell, mode: 'dwell',
+    onActivate: (id) => events.push(id) });
+  src.start();
+  src.focus('w1', 0);
+  advance(dwell, 0, 400);
+  assert.deepEqual(events, ['w1'], 'a pointer user has nothing to consent to');
+});
+
+test('CONSENT: a refused gate blocks activation entirely', () => {
+  const events = [];
+  const gate = fakeGate(false);
+  const src = new ExternalSource();
+  const dwell = new DwellEngine({ dwellMs: 300, lockOnMs: 0 });
+  new SignalBridge({ source: src, dwell, mode: 'dwell', consent: gate,
+    onActivate: (id) => events.push(id) });
+  src.start();
+  src.focus('w1', 0);
+  advance(dwell, 0, 400);
+  assert.equal(events.length, 0, 'no consent means no reading of the signal');
+});
+
+test('CONSENT: granting mid-session lets the signal through', () => {
+  const events = [];
+  const gate = fakeGate(false);
+  const src = new ExternalSource();
+  const dwell = new DwellEngine({ dwellMs: 300, lockOnMs: 0 });
+  new SignalBridge({ source: src, dwell, mode: 'dwell', consent: gate,
+    onActivate: (id) => events.push(id) });
+  src.start();
+
+  src.focus('w1', 0);
+  advance(dwell, 0, 200);
+  assert.equal(events.length, 0);
+
+  gate.grant();
+  src.focus('w2', 200);
+  advance(dwell, 200, 600);
+  assert.deepEqual(events, ['w2'], 'after the grant it works');
+});
+
+test('CONSENT: WITHDRAWING mid-dwell cancels the in-flight activation', () => {
+  // The failure this prevents: turning consent off and still getting the
+  // selection you had already started.
+  const events = [];
+  const gate = fakeGate(true);
+  const src = new ExternalSource();
+  const dwell = new DwellEngine({ dwellMs: 600, lockOnMs: 0 });
+  new SignalBridge({ source: src, dwell, mode: 'dwell', consent: gate,
+    onActivate: (id) => events.push(id) });
+  src.start();
+
+  src.focus('w1', 0);
+  advance(dwell, 0, 300);   // half-way through the dwell
+  gate.withdraw();          // user turns it off now
+  advance(dwell, 300, 800); // the dwell would have completed here
+  assert.equal(events.length, 0, 'a withdrawn grant must stop the activation');
+});
+
+test('CONSENT: withdrawing then re-granting works normally again', () => {
+  const events = [];
+  const gate = fakeGate(true);
+  // ONE clock, shared by the source and the engine. ExternalSource stamps
+  // focus events with its own clock; the engine's heartbeats use another. If
+  // they differ, the clock-gap guard sees a stall and aborts valid dwells.
+  // Real hosts satisfy this by construction (everything is performance.now());
+  // this test wires both to the same mutable time.
+  let clock = 0;
+  const src = new ExternalSource({ now: () => clock });
+  const dwell = new DwellEngine({ dwellMs: 300, lockOnMs: 0 });
+  new SignalBridge({ source: src, dwell, mode: 'dwell', consent: gate,
+    onActivate: (id) => events.push(id) });
+  src.start();
+
+  const run = (from, to) => {
+    for (let t = from; t <= to; t += 16) { clock = t; dwell.hold(t); }
+    clock = to;
+  };
+
+  clock = 0; src.focus('w1');
+  run(0, 400);
+  assert.equal(events.length, 1);
+
+  gate.withdraw();
+  clock = 500; src.focus('w2');
+  run(500, 950);   // heartbeats continue while withdrawn, as a real host's would
+  assert.equal(events.length, 1, 'nothing while withdrawn');
+
+  gate.grant();
+  clock = 1000; src.focus('w3');
+  run(1000, 1400);
+  assert.equal(events.length, 2, 're-granting restores normal operation');
+});
+
+test('CONSENT: a direct source is gated too', () => {
+  const events = [];
+  const gate = fakeGate(false);
+  const src = new SwitchSource({ keys: [' '] });
+  const dwell = new DwellEngine({ dwellMs: 300 });
+  new SignalBridge({ source: src, dwell, consent: gate,
+    onActivate: (id) => events.push(id) });
+  src.start();
+  src.onSelect?.('w1', 0);
+  assert.equal(events.length, 0, 'a switch press is still reading the signal');
+});
+
+test('CONSENT: cancel is NOT gated — backing out must always work', () => {
+  const cancels = [];
+  const gate = fakeGate(false);
+  const src = new ExternalSource();
+  const dwell = new DwellEngine({ dwellMs: 300 });
+  new SignalBridge({ source: src, dwell, consent: gate,
+    onCancel: (_id, meta) => cancels.push(meta.reason) });
+  src.start();
+  src.cancel('escape');
+  assert.deepEqual(cancels, ['escape'],
+    'a user leaving must never be blocked, including to escape consent');
+});
+
+test('CONSENT: a BROKEN gate fails closed, not open', () => {
+  // A gate that throws must mean "no consent". A broken gate that reads as
+  // permission is worse than having no gate at all.
+  const events = [];
+  const brokenGate = { isGranted() { throw new Error('gate is broken'); } };
+  const src = new ExternalSource();
+  const dwell = new DwellEngine({ dwellMs: 300, lockOnMs: 0 });
+  new SignalBridge({ source: src, dwell, mode: 'dwell', consent: brokenGate,
+    onActivate: (id) => events.push(id) });
+  src.start();
+  src.focus('w1', 0);
+  advance(dwell, 0, 400);
+  assert.equal(events.length, 0, 'a throwing gate must not admit the signal');
+});
+
+test('CONSENT: a gate missing isGranted also fails closed', () => {
+  const events = [];
+  const malformed = { grant() {} }; // no isGranted
+  const src = new ExternalSource();
+  const dwell = new DwellEngine({ dwellMs: 300, lockOnMs: 0 });
+  new SignalBridge({ source: src, dwell, mode: 'dwell', consent: malformed,
+    onActivate: (id) => events.push(id) });
+  src.start();
+  src.focus('w1', 0);
+  advance(dwell, 0, 400);
+  assert.equal(events.length, 0, 'a malformed gate must not admit the signal');
+});
+
+test('CONSENT: a custom purpose name is honored', () => {
+  const asked = [];
+  const gate = { isGranted: (p) => { asked.push(p); return false; } };
+  const src = new ExternalSource();
+  const dwell = new DwellEngine({ dwellMs: 300 });
+  new SignalBridge({ source: src, dwell, consent: gate,
+    consentPurpose: 'process_locally' });
+  src.start();
+  src.focus('w1', 0);
+  assert.ok(asked.includes('process_locally'),
+    'the bridge asks about the purpose it was told to');
+});
+
 // -- switch behaviour -------------------------------------------------------
 
 /** A fake DOM root for switch tests: N targets, no real elements needed. */

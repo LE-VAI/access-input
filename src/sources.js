@@ -724,6 +724,14 @@ export class SignalBridge {
    *   that KNOWS its device is position-only (a gaze tracker, a head-pointer)
    *   can force 'dwell' even for a source class that declares both, and a host
    *   whose device only ever presses can force 'direct'.
+   * @param {object} [options.consent] an OPTIONAL consent gate. Duck-typed —
+   *   anything with isGranted(purposeId) works, which includes neural-consent's
+   *   ConsentManager. access-input has zero dependencies, so this is an
+   *   interface, not an import.
+   * @param {string} [options.consentPurpose='acquire_signal'] which purpose
+   *   must be granted before the source may deliver anything. Neural-input
+   *   tools have a real reason to gate here: reading the signal IS the
+   *   processing act, so that is where consent has to bite.
    */
   constructor(options) {
     this.source = options.source;
@@ -733,6 +741,25 @@ export class SignalBridge {
     this.onProgress = options.onProgress || null;
     this.onCancel = options.onCancel || null;
     this.mode = options.mode || 'auto';
+
+    /**
+     * CONSENT GATE — FAIL CLOSED.
+     *
+     * When a gate is supplied, the bridge checks it before forwarding ANY
+     * event from the source. Without a grant nothing reaches the dwell engine
+     * and nothing can activate: the app cannot read the signal at all.
+     *
+     * The check runs PER EVENT, not once at startup, because consent can be
+     * withdrawn while the tool is running. A gate evaluated only at start
+     * would keep working after the user turned it off — the exact failure
+     * mode consent exists to prevent.
+     *
+     * A gate that throws is treated as NO CONSENT. If the gate object is
+     * broken, the safe reading is "not granted": a broken gate must never be
+     * a permissive one.
+     */
+    this.consent = options.consent || null;
+    this.consentPurpose = options.consentPurpose ?? 'acquire_signal';
 
     this._lastFocused = null;
     this._dwellUsed = false;
@@ -751,6 +778,10 @@ export class SignalBridge {
       this.onProgress?.(id, ratio);
     };
     this.dwell.onActivate = (id, meta) => {
+      // Final gate. The dwell ran while consent was held, but consent can be
+      // withdrawn in the last few frames of a dwell, and an activation fired
+      // after the user turned it off is exactly the failure consent prevents.
+      if (!this._consentAllows()) return;
       this._dwellUsed = true;
       prevActivate?.(id, meta);
       this.onActivate?.(id, { ...meta, via: 'dwell' });
@@ -763,6 +794,34 @@ export class SignalBridge {
     this._wireSource();
   }
 
+  /**
+   * Is the source allowed to deliver events right now?
+   *
+   * No gate configured means yes (the module is usable without consent
+   * tooling — a pointer or keyboard user has nothing to consent to). A gate
+   * that throws, or that lacks isGranted, means NO: a broken gate must fail
+   * in the safe direction.
+   *
+   * When the answer changes to refused, any in-flight dwell is cancelled —
+   * otherwise withdrawing consent mid-dwell would still complete and fire.
+   */
+  _consentAllows() {
+    if (!this.consent) return true;
+    let granted = false;
+    try {
+      if (typeof this.consent.isGranted !== 'function') return false;
+      granted = this.consent.isGranted(this.consentPurpose) === true;
+    } catch {
+      return false; // an unreadable gate is not consent
+    }
+    if (!granted && this._consentWasGranted) {
+      // The grant just went away — stop anything already in progress.
+      this.dwell.cancel('consent-withdrawn');
+    }
+    this._consentWasGranted = granted;
+    return granted;
+  }
+
   _wireSource() {
     const caps = this.source.capabilities;
     // An explicit mode wins over the class declaration: the host knows its
@@ -770,7 +829,23 @@ export class SignalBridge {
     const direct = this.mode === 'auto' ? caps.direct : this.mode === 'direct';
     const continuous = this.mode === 'auto' ? caps.continuous : this.mode === 'dwell';
 
+    // Seed the grant state so a withdrawal DURING the first dwell is detected
+    // (without this the "was granted" flag starts undefined and the first
+    // withdrawal would be missed).
+    this._consentWasGranted = this.consent ? this._consentAllows() : true;
+
     this.source.onFocus = (id, tMs) => {
+      if (!this._consentAllows()) {
+        // Track the position even while gated, WITHOUT acting on it.
+        //
+        // Otherwise the bridge's "last focused" state goes stale: the signal
+        // moves to a new target during the withdrawal, and when consent is
+        // re-granted the next focus event is judged "unchanged" and no dwell
+        // ever starts. The tool appears broken until the user happens to move
+        // to a third target. Caught by a test that withdrew and re-granted.
+        this._lastFocused = id;
+        return;
+      }
       if (id !== this._lastFocused) {
         this.onFocus?.(id);
         this._lastFocused = id;
@@ -785,12 +860,15 @@ export class SignalBridge {
     };
 
     this.source.onSelect = (id, tMs) => {
+      if (!this._consentAllows()) return;
       this._dwellUsed = false;
       // A direct source selecting a target: activate it outright.
       this.onActivate?.(id, { tMs, via: 'direct' });
     };
 
     this.source.onCancel = (reason, tMs) => {
+      // Cancel is NOT gated: a user backing out must always work, including
+      // when consent is the thing they are backing out of.
       this.dwell.cancel(reason);
       this.onCancel?.(null, { reason, tMs });
     };
