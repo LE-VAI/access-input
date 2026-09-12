@@ -17,3 +17,21 @@ export {
 } from './sources.js';
 export { ReadAlongInputHost } from './read-along.js';
 export { tagWords, untagWords, splitWords, TARGET_ATTR, WORD_CLASS } from './words.js';
+export {
+  AnalogSwitchSource,
+} from './analog-source.js';
+
+export {
+  ActivationDetector,
+  ANALOG_DEFAULTS,
+  EnvelopeFilter,
+  applyTkeo,
+  median,
+  mad,
+  sigmaFromMad,
+} from './analog.js';
+
+export {
+  GamepadTransport,
+  SerialTransport,
+} from './transports.js';

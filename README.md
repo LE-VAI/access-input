@@ -137,6 +137,58 @@ The gate is enforced by the input layer, so it bites in the right place: while c
 
 Verified in a real browser: blocked (`0` activations), granted (`1` activation, the reader seeked to the chosen token), and mid-dwell withdrawal (`0` activations where `1` was expected).
 
+## Analog biosignal input (EMG, sip-and-puff)
+
+An analog sensor produces a *continuous* signal, not presses. `AnalogSwitchSource` derives them — rectify, envelope, adaptive threshold, activation state machine — and then behaves exactly like `SwitchSource`, so `SignalBridge` and everything downstream need no changes.
+
+```js
+import { AnalogSwitchSource, GamepadTransport } from 'access-input/analog-source.js';
+
+const source = new AnalogSwitchSource({
+  transport: new GamepadTransport({ mode: 'analog', axisIndex: 0 }),
+});
+await source.start();
+
+// Calibrate, then adopt — or refuse a signal that cannot support thresholds.
+const rest = await capture(300);
+const effort = [await captureBurst(), await captureBurst(), await captureBurst()];
+const result = source.calibrate(rest, effort);
+if (!result.ok) showMessage(result.detail);   // "signal-too-weak" explains why
+```
+
+### The transport order is research-driven, and not what you would guess
+
+**Gamepad first.** Origin Instruments' Breeze sip-and-puff switch has a documented "Joystick Plus" mode that publishes **raw analog pressure as a standard HID joystick axis** — sip negative, puff positive, ±4 kPa at the extremes. So the browser reads real sip-and-puff pressure from a shipping commercial device with no driver, no protocol and no chooser UI. The Xbox Adaptive Controller and Hori Flex arrive through the same path.
+
+**Keyboard is already covered.** Most commercial USB switch interfaces (AbleNet Hitch 2, Blue2 FT, Origin Swifty in keyboard mode) present as HID keyboards emitting Enter or Space — so `KeyboardSource` handles them with no new code. Documented rather than rebuilt.
+
+**Web Serial is the maker path.** No assistive switch vendor publishes a serial protocol (that set is empty), and no consumer EMG device in 2026 is browser-reachable with documented protocol. So `SerialTransport` defines a minimal one instead of pretending to adopt one: newline-delimited JSON, `{"t":ms,"v":value}`, with an optional `{"dev":…,"fs":hz}` hello.
+
+### What the detector refuses to do
+
+**It never lowers thresholds into the noise floor.** A user whose strongest effort cannot clear the noise floor is told so, with a reason — because the alternative produces activations they did not make, which the 2025 EMG-switch usability trial found to be the dominant complaint. The failure path is a first-class result, not an error to work around.
+
+### Evidenced constants vs judgement calls
+
+The code distinguishes them, and so does this README:
+
+| Constant | Value | Basis |
+|---|---|---|
+| Onset criterion | amplitude above baseline | Collins 2020 (n=60) |
+| Baseline multiplier | 3σ | Collins used 2σ; raised deliberately, because a false activation costs more than a miss here |
+| Envelope cutoff | 5 Hz | conventional linear-envelope band is 5–10 Hz |
+| Raw EMG band-pass | 20–450 Hz | SENIAM; Noraxon puts the high cut at 400–500 Hz |
+| Spike conditioning | TKEO optional | Solnik 2010: onset error 13 ms vs 98 ms |
+| Adaptive threshold | dual-threshold with slow creep | OpenBCI's model; the implementable state of the art |
+| **Min activation 150 ms** | **judgement** | No AT-specific published value exists. The 50 ms figure that looks like a candidate is a clinical *burst-duration* floor, and healthy controls routinely breach it — so 150 ms is deliberately well above it. |
+| **Release 100 ms, refractory 300 ms** | **judgement** | Same; expose and tune per user. |
+
+All of them live in an exported `ANALOG_DEFAULTS` object so a clinician can tune without forking.
+
+### What this is not
+
+Not a medical device. Not for diagnosis, therapy, or any application where a missed or spurious activation could cause harm. It reads **muscle electrical activity or air pressure** — an indirect, noisy proxy for intent — and it is not a brain interface, so do not call it one. Both false activations and missed activations will occur; that is the nature of the signal, not a defect to be hidden. A switch assessment led by an occupational therapist or AAC clinician is the correct process, and this library is not a substitute for it.
+
 ## Consent gating (optional)
 
 Reading a signal IS the processing act, so that is where consent has to bite. `SignalBridge` accepts an optional gate — duck-typed, because this package has zero dependencies, so it is an interface rather than an import:
