@@ -174,7 +174,12 @@ new DwellEngine({
   .cancel(reason)         // explicit cancel
   .setDwell(ms)           // authoritative user choice (WCAG 2.2.1)
   .pause() / .resume()    // global kill switch (all platforms ship one)
-  .setRepeatTargets(ids)  // opt targets into timed auto-repeat
+  .setRepeatTargets(ids)  // opt targets into timed auto-repeat (additive)
+  .clearRepeatTargets(ids)      // remove specific registrations
+  .repeatIntervalFor(id)        // the interval a target will use
+  // Per-target rates, because controls differ:
+  //   setRepeatTargets({ 'volume-up': 400 })  // 400ms, others keep the default
+  // Registration is ADDITIVE, so targets can be added as a UI builds.
   .reportUndo()           // host: the user undid the last activation
   .isSpent(id)            // has this target fired and not yet been re-armed?
   .phase                  // 'idle' | 'lockon' | 'dwell' | 'spent'
