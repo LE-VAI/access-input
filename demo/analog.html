@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>From a noisy biosignal to one clean press</title>
+<style>
+  :root {
+    --bg: #0b0c0f;
+    --surface: #181a1e;
+    --border: #2a2d33;
+    --text: #f5f5f7;
+    --dim: #9a9aa5;
+    --amber: #ffc400;
+    --ok: #34c759;
+    --no: #ff453a;
+    --trace: #4a9eff;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 16px/1.65 ui-sans-serif, system-ui, sans-serif;
+    padding: clamp(18px, 4.5vw, 52px);
+    max-width: 900px; margin-inline: auto;
+  }
+  .eyebrow {
+    font: 600 12px/1 ui-sans-serif, system-ui, sans-serif;
+    letter-spacing: 0.14em; text-transform: uppercase; color: var(--amber);
+    margin-bottom: 14px;
+  }
+  h1 { font-size: clamp(23px, 4vw, 32px); letter-spacing: -0.02em; margin-bottom: 12px; }
+  .sub { color: var(--dim); font-size: 15px; margin-bottom: 28px; max-width: 64ch; }
+  .panel {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 14px; padding: 22px; margin-bottom: 18px;
+  }
+  .panel h2 {
+    font: 600 12px/1 inherit; letter-spacing: 0.07em; text-transform: uppercase;
+    color: var(--dim); margin-bottom: 14px;
+  }
+  canvas { width: 100%; height: 240px; display: block; border-radius: 9px; background: #101216; }
+  .readout {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 12px; margin-top: 14px;
+  }
+  .stat { font: 12.5px/1.5 ui-monospace, monospace; color: var(--dim); }
+  .stat b { color: var(--text); font-weight: 600; display: block; font-size: 15px; margin-top: 2px; }
+  .stat b.ok { color: var(--ok); }
+  .stat b.no { color: var(--no); }
+
+  button {
+    background: transparent; color: var(--text); border: 1px solid var(--border);
+    border-radius: 999px; padding: 7px 15px; font: 500 13px/1 inherit; cursor: pointer;
+  }
+  button:hover { border-color: var(--dim); }
+  button:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+  button[aria-pressed="true"] { background: var(--amber); color: #0b0c0f; border-color: var(--amber); }
+  button[data-primary] { border-color: color-mix(in oklab, var(--ok) 50%, transparent); }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+  .hint { font-size: 13.5px; color: var(--dim); margin-top: 10px; }
+
+  .press-lamp {
+    width: 100%; padding: 12px; border-radius: 9px; text-align: center;
+    border: 1px solid var(--border); font: 600 14px/1 inherit;
+    background: transparent; color: var(--dim); transition: none;
+  }
+  .press-lamp[data-on="yes"] {
+    background: color-mix(in oklab, var(--ok) 22%, transparent);
+    border-color: var(--ok); color: var(--ok);
+  }
+  .events { font: 12px/1.7 ui-monospace, monospace; color: var(--dim); max-height: 130px; overflow-y: auto; white-space: pre-wrap; }
+  .key { color: var(--dim); font-size: 13px; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font: 12px/1.6 ui-monospace, monospace; color: var(--dim); margin-top: 10px; }
+  .swatch { display: inline-block; width: 22px; height: 2px; vertical-align: middle; margin-right: 5px; }
+  .visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); }
+</style>
+</head>
+<body>
+<p class="eyebrow">Open source · MIT · zero dependencies</p>
+<h1>From a noisy biosignal to one clean press</h1>
+<p class="sub">A muscle sensor or a sip-and-puff tube does not produce clicks — it produces a messy
+analog signal that drifts, spikes, and never quite sits still. Something has to decide when it means
+"I intend to activate." That decision is where assistive switches usually fail: too eager and the
+interface fires while you rest, too timid and you cannot reach it at all. This is the pipeline, running live.</p>
+
+<div class="panel">
+  <h2>Signal</h2>
+  <div class="row">
+    <button id="sim-noise" aria-pressed="false" data-primary>Simulate noise (should not fire)</button>
+    <button id="sim-effort" aria-pressed="false">Simulate an effort (should fire)</button>
+    <button id="sim-spike" aria-pressed="false">Inject a spike (should be rejected)</button>
+    <button id="clear">Reset</button>
+  </div>
+  <canvas id="trace" width="1600" height="480" aria-label="Live signal level with threshold lines"></canvas>
+  <div class="legend">
+    <span><span class="swatch" style="background: var(--trace)"></span>envelope</span>
+    <span><span class="swatch" style="background: var(--amber)"></span>activation threshold</span>
+    <span><span class="swatch" style="background: var(--dim)"></span>noise floor</span>
+  </div>
+  <div class="readout">
+    <div class="stat">level<b id="r-level">—</b></div>
+    <div class="stat">noise floor<b id="r-low">—</b></div>
+    <div class="stat">threshold<b id="r-high">—</b></div>
+    <div class="stat">noise σ<b id="r-sigma">—</b></div>
+    <div class="stat">presses<b id="r-press">0</b></div>
+    <div class="stat">rejected spikes<b id="r-spike">0</b></div>
+  </div>
+  <div style="margin-top:14px"><div class="press-lamp" id="lamp">no press</div></div>
+</div>
+
+<div class="panel">
+  <h2>Calibration</h2>
+  <div class="row">
+    <button id="cal-good" data-primary>Calibrate on a good signal</button>
+    <button id="cal-weak">Calibrate on a weak signal</button>
+  </div>
+  <p class="hint" id="cal-msg">Not calibrated — the detector will not fire until it has measured your resting level and your strongest effort. That refusal is deliberate.</p>
+  <div class="hint" id="cal-detail" style="margin-top:8px"></div>
+</div>
+
+<div class="panel">
+  <h2>Detected presses</h2>
+  <div class="events" id="events">(none yet)</div>
+</div>
+
+<p class="visually-hidden" id="live" aria-live="polite"></p>
+
+<script type="module">
+import { ActivationDetector, ANALOG_DEFAULTS, median, mad, sigmaFromMad }
+  from 'https://cdn.jsdelivr.net/npm/access-input@0.2.0/src/index.js';
+
+const canvas = document.getElementById('trace');
+const ctx = canvas.getContext('2d');
+const eventsEl = document.getElementById('events');
+const lampEl = document.getElementById('lamp');
+const liveEl = document.getElementById('live');
+
+const FS = 100;                 // sample rate, Hz
+let det = new ActivationDetector({ sampleRateHz: FS });
+let t = 0;
+let presses = 0;
+let rejectedSpikes = 0;
+let mode = 'idle';              // idle | noise | effort
+let effortUntil = 0;
+let spikeAt = -1;
+
+// Trace ring buffer — what the meter draws.
+const WINDOW_MS = 6000;
+const trace = [];               // { t, level }
+
+const rLevel = document.getElementById('r-level');
+const rLow = document.getElementById('r-low');
+const rHigh = document.getElementById('r-high');
+const rSigma = document.getElementById('r-sigma');
+const rPress = document.getElementById('r-press');
+const rSpike = document.getElementById('r-spike');
+
+const log = (msg) => {
+  const stamp = new Date().toLocaleTimeString('en-US', { hour12: false });
+  eventsEl.textContent = `${stamp}  ${msg}\n` + (eventsEl.textContent === '(none yet)' ? '' : eventsEl.textContent);
+};
+const announce = (m) => { liveEl.textContent = m; };
+
+// --- a synthetic biosignal ------------------------------------------------
+// Deterministic pseudo-noise so the demo behaves the same for every visitor.
+let seed = 12345;
+function rand() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
+
+/** Resting level ~1.0 with realistic jitter; effort pushes to ~9. */
+function synthSample() {
+  const noise = (rand() - 0.5) * 0.30;
+  const drift = Math.sin(t / 4000) * 0.10;          // slow electrode drift
+  let v = 1.0 + noise + drift;
+  if (mode === 'effort' && t < effortUntil) {
+    v += 8.0 * (0.85 + rand() * 0.3);               // an effort, with its own noise
+  }
+  if (spikeAt > 0 && t >= spikeAt) {
+    v = 900 + rand() * 200;
+    // Ask the detector whether THIS value would be clamped away, before it
+    // enters the pipeline. That is the honest way to report a rejection.
+    if (probeSpike(v)) rejectedSpikes++;
+    spikeAt = -1;
+  }
+  return v;
+}
+
+// --- the loop -------------------------------------------------------------
+let raf = 0;
+let lastSampleT = performance.now();
+
+function loop(now) {
+  // Feed samples in real time so the demo runs at a believable pace.
+  while (now - lastSampleT >= 1000 / FS) {
+    lastSampleT += 1000 / FS;
+    t += 1000 / FS;
+    const raw = synthSample();
+    const level = det.push(raw, t);
+    trace.push({ t, level, thresholds: det.thresholds });
+    if (trace.length > (WINDOW_MS / 1000) * FS) trace.shift();
+  }
+  draw();
+  requestAnimationFrame(loop);
+}
+
+det.onPress = (tMs) => {
+  presses++;
+  lampEl.dataset.on = 'yes';
+  lampEl.textContent = 'PRESS';
+  log(`press detected   (level cleared the threshold for ${ANALOG_DEFAULTS.minActivationMs}ms)`);
+  announce('Press detected.');
+};
+det.onRelease = () => {
+  lampEl.dataset.on = 'no';
+  lampEl.textContent = 'no press';
+};
+
+/**
+ * Count rejected spikes by asking the DETECTOR, not by guessing from its output.
+ *
+ * The clamp replaces an artifact with the last good sample, so a successful
+ * rejection is invisible downstream — the envelope never sees anything. Any
+ * heuristic watching the envelope would therefore report zero rejections in
+ * exactly the case the demo exists to show. So the test is direct: feed the
+ * detector a raw sample and compare it to the value it returns. A large
+ * difference means the clamp fired.
+ */
+function probeSpike(raw) {
+  const out = det._clamped(raw);
+  return Number.isFinite(out) && raw - out > 1;
+}
+let pendingSpikeProbe = 0;
+
+function draw() {
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  const th = det.thresholds;
+
+  // Scale: fit the trace comfortably, but keep a sane floor so noise alone
+  // does not get magnified into looking like signal.
+  const peak = Math.max(4, ...trace.map((p) => p.level));
+  const y = (v) => h - (v / peak) * (h - 20) - 10;
+
+  // Threshold lines.
+  if (th.high != null) {
+    ctx.strokeStyle = '#ffc400'; ctx.lineWidth = 2; ctx.beginPath();
+    ctx.moveTo(0, y(th.high)); ctx.lineTo(w, y(th.high)); ctx.stroke();
+  }
+  if (th.low != null) {
+    ctx.strokeStyle = '#9a9aa5'; ctx.lineWidth = 1; ctx.setLineDash([6, 6]);
+    ctx.beginPath(); ctx.moveTo(0, y(th.low)); ctx.lineTo(w, y(th.low)); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // Envelope trace.
+  if (trace.length > 1) {
+    ctx.strokeStyle = '#4a9eff'; ctx.lineWidth = 2; ctx.beginPath();
+    trace.forEach((p, i) => {
+      const x = (i / (trace.length - 1)) * w;
+      i ? ctx.lineTo(x, y(p.level)) : ctx.moveTo(x, y(p.level));
+    });
+    ctx.stroke();
+  }
+
+  // Readouts.
+  const fmt = (v) => (v == null ? '—' : v.toFixed(2));
+  rLevel.textContent = fmt(det._envelope?.y ?? null);
+  rLow.textContent = fmt(th.low);
+  rHigh.textContent = fmt(th.high);
+  rSigma.textContent = fmt(th.sigma);
+  rPress.textContent = String(presses);
+  rSpike.textContent = String(rejectedSpikes);
+}
+
+// --- controls -------------------------------------------------------------
+let modeTimer = 0;
+const setMode = (m, ms) => {
+  clearTimeout(modeTimer);
+  mode = m;
+  if (ms) effortUntil = t + ms;
+  for (const [id, on] of [['sim-noise', m === 'noise'], ['sim-effort', m === 'effort']]) {
+    document.getElementById(id).setAttribute('aria-pressed', String(on));
+  }
+  // An effort is transient: when it ends, fall back to resting AND move the
+  // indicator, so the button never claims a mode that is not running.
+  if (ms) modeTimer = setTimeout(() => setMode('noise', 0), ms + 50);
+};
+document.getElementById('sim-noise').addEventListener('click', () => setMode('noise', 0));
+document.getElementById('sim-effort').addEventListener('click', () => {
+  setMode('effort', 900);
+  announce('Simulating an effort.');
+});
+document.getElementById('sim-spike').addEventListener('click', () => {
+  spikeAt = t + 50;
+  announce('Injecting a spike.');
+});
+document.getElementById('clear').addEventListener('click', () => {
+  det = new ActivationDetector({ sampleRateHz: FS });
+  bindDetector();
+  trace.length = 0; presses = 0; rejectedSpikes = 0; t = 0;
+  eventsEl.textContent = '(none yet)';
+  document.getElementById('cal-msg').textContent =
+    'Not calibrated — the detector will not fire until it has measured your resting level and your strongest effort. That refusal is deliberate.';
+  document.getElementById('cal-detail').textContent = '';
+  announce('Reset.');
+});
+
+function bindDetector() {
+  det.onPress = (tMs) => {
+    presses++;
+    lampEl.dataset.on = 'yes'; lampEl.textContent = 'PRESS';
+    log(`press detected   (held above the threshold for ${ANALOG_DEFAULTS.minActivationMs}ms)`);
+    announce('Press detected.');
+  };
+  det.onRelease = () => { lampEl.dataset.on = 'no'; lampEl.textContent = 'no press'; };
+}
+
+// --- calibration ----------------------------------------------------------
+function collectRest(ms = 3000) {
+  const out = [];
+  for (let i = 0; i < (ms / 1000) * FS; i++) out.push(1.0 + (rand() - 0.5) * 0.30);
+  return out;
+}
+function collectEffort(level, ms = 1200) {
+  const out = [];
+  for (let i = 0; i < (ms / 1000) * FS; i++) out.push(1.0 + level * (0.85 + rand() * 0.3));
+  return out;
+}
+
+document.getElementById('cal-good').addEventListener('click', () => {
+  det.reset(); bindDetector(); trace.length = 0;
+  const rest = collectRest();
+  const { baseline, sigma } = det.measureRest(rest);
+  const peak = Math.max(...collectEffort(8, 1200).map((v) => v));
+  const r = det.calibrate(baseline, sigma, peak);
+  report(r, baseline, sigma, peak);
+});
+document.getElementById('cal-weak').addEventListener('click', () => {
+  det.reset(); bindDetector(); trace.length = 0;
+  // The user with a weak signal: resting level 5, noise 2, effort only 6.
+  const rest = Array.from({ length: 300 }, () => 5 + (rand() - 0.5) * 4);
+  const { baseline, sigma } = det.measureRest(rest);
+  const peak = 6.2;
+  const r = det.calibrate(baseline, sigma, peak);
+  report(r, baseline, sigma, peak);
+});
+
+function report(r, baseline, sigma, peak) {
+  const msg = document.getElementById('cal-msg');
+  const detail = document.getElementById('cal-detail');
+  if (r.ok) {
+    msg.textContent = `Calibrated. Resting level ${baseline.toFixed(2)}, noise σ ${sigma.toFixed(2)} — thresholds derived from your own signal, not from a fixed number.`;
+    msg.style.color = 'var(--ok)';
+    detail.textContent = `noise floor ${r.thresholds.low.toFixed(2)} · activation ${r.thresholds.high.toFixed(2)} · your peak ${peak.toFixed(2)}`;
+    log(`calibrated: floor ${r.thresholds.low.toFixed(2)}, threshold ${r.thresholds.high.toFixed(2)}`);
+    announce('Calibrated.');
+  } else {
+    msg.textContent = `REFUSED — ${r.reason}`;
+    msg.style.color = 'var(--no)';
+    detail.textContent = r.detail;
+    log(`calibration refused (${r.reason}) — thresholds NOT lowered into the noise`);
+    announce('Calibration refused. The signal is too weak.');
+  }
+}
+
+bindDetector();
+setMode('noise', 0); // resting by default, and the indicator says so
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

@@ -4,7 +4,7 @@
 
 Zero dependencies. MIT. Runs in the browser, testable in Node.
 
-**[Try the live demo →](https://le-vai.github.io/access-input/demo/)** · **[The read-along integration →](https://le-vai.github.io/access-input/demo/read-along.html)** · **[The full stack, consent-gated →](https://le-vai.github.io/access-input/demo/stack.html)**
+**[Dwell & scan →](https://le-vai.github.io/access-input/demo/)** · **[Read-along integration →](https://le-vai.github.io/access-input/demo/read-along.html)** · **[Consent-gated full stack →](https://le-vai.github.io/access-input/demo/stack.html)** · **[Biosignal pipeline →](https://le-vai.github.io/access-input/demo/analog.html)**
 
 *(The second demo is the whole point of this package: a person using a switch, gaze tracker, or EMG channel drives a real [`<read-along>`](https://github.com/LE-VAI/read-along) element. Rest on a word and the reading starts there. Neither library knows the other's internals — they compose through the published APIs.)*
 
