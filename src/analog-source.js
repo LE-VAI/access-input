@@ -54,9 +54,14 @@ export class AnalogSwitchSource extends InputSource {
 
     this.onLevel = options.onLevel || null;
     this.onStatus = options.onStatus || null;
+    /** ({ reason, error }) — the device stopped responding. */
+    this.onDisconnect = options.onDisconnect || null;
+    /** (state, detail) — 'streaming' | 'disconnected' etc. */
+    this.onDeviceState = options.onDeviceState || null;
     this.onPressRaw = options.onPressRaw || null;
     this.onReleaseRaw = options.onReleaseRaw || null;
     this.cancelOnSecondChannel = options.cancelOnSecondChannel ?? false;
+    this._deviceState = 'idle';
 
     this.detector = new ActivationDetector({
       ...options.detector,
@@ -83,6 +88,24 @@ export class AnalogSwitchSource extends InputSource {
     };
     this.transport.onStatus = (s) => this.onStatus?.(s);
 
+    /**
+     * A dropped device must reach the UI, not just a log.
+     *
+     * When a user's switch stops responding, the explanations they reach for
+     * first are about their own body. A disconnect announcement is what stops
+     * that reading — so it is surfaced through the source, not swallowed by the
+     * transport.
+     */
+    this.transport.onDisconnect = (info) => {
+      this._deviceState = 'disconnected';
+      this.onDeviceState?.('disconnected', info);
+      this.onDisconnect?.(info);
+    };
+    this.transport.onDeviceState = (state, detail) => {
+      this._deviceState = state;
+      this.onDeviceState?.(state, detail);
+    };
+
     // A button-mode transport already has discrete presses; bypass the
     // detector entirely rather than running signal processing over a boolean.
     if (this.transport.mode === 'button') {
@@ -93,6 +116,9 @@ export class AnalogSwitchSource extends InputSource {
       this.transport.onRelease = (tMs) => this.onReleaseRaw?.(tMs, 0);
     }
   }
+
+  /** 'idle' | 'streaming' | 'disconnected' — for a device-status UI. */
+  get deviceState() { return this._deviceState; }
 
   /** Calibrated thresholds, or nulls before calibration. */
   get thresholds() { return this.detector.thresholds; }

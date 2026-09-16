@@ -351,3 +351,74 @@ test('defaults are exported so a clinician can tune without forking', () => {
   assert.ok(ANALOG_DEFAULTS.minActivationMs > 50,
     'the activation floor must sit above the clinical 50ms burst figure');
 });
+
+// -- device state: a disconnect must be announced ---------------------------
+
+test('a dropped gamepad is detected and announced', async () => {
+  // The Gamepad API reports a disconnect by OMISSION — no event, no error —
+  // so without an explicit check a switch stops working silently. The
+  // explanations a user reaches for first are about their own body, which is
+  // what makes silence the harmful option.
+  const { GamepadTransport } = await import('../src/transports.js');
+
+  const pad = { id: 'Test Switch', index: 0, axes: [0], buttons: [{ pressed: false, value: 0 }] };
+  const disconnects = [];
+  const states = [];
+  // navigator is getter-only in Node 21+; define it rather than assign.
+  Object.defineProperty(globalThis, 'navigator', {
+    value: { getGamepads: () => (removed ? [] : [pad]) },
+    configurable: true, writable: true,
+  });
+  // rAF must be stubbed with setTimeout, NOT queueMicrotask. The transport
+  // re-arms the poll every frame, and a microtask-driven frame loop starves
+  // the event loop — the setTimeout that ends the test never runs and the
+  // process hangs. Real rAF is a macrotask; the stub must be one too.
+  globalThis.requestAnimationFrame = (fn) => setTimeout(() => fn(Date.now()), 0);
+  globalThis.cancelAnimationFrame = () => {};
+  let removed = false;
+
+  const t = new GamepadTransport({
+    onDisconnect: (info) => disconnects.push(info),
+    onDeviceState: (state) => states.push(state),
+  });
+  await t.start();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(t.connected, true, 'the pad is seen');
+  assert.ok(states.includes('streaming'), 'and reported as streaming');
+
+  removed = true; // unplugged
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(t.connected, false, 'the pad is gone');
+  assert.equal(disconnects.length, 1, 'the disconnect is announced exactly once');
+  assert.equal(disconnects[0].reason, 'gamepad-gone');
+  assert.equal(t.deviceState, 'disconnected');
+  t.stop();
+
+  Object.defineProperty(globalThis, 'navigator', { value: undefined, configurable: true });
+  delete globalThis.requestAnimationFrame;
+  delete globalThis.cancelAnimationFrame;
+});
+
+test('the transport reports device state transitions to the source', async () => {
+  const { AnalogSwitchSource } = await import('../src/analog-source.js');
+  const states = [];
+  const transport = {
+    mode: 'analog',
+    async start() { return true; },
+    stop() {},
+  };
+  const src = new AnalogSwitchSource({
+    transport,
+    onDeviceState: (state) => states.push(state),
+    onDisconnect: () => states.push('disconnected-cb'),
+  });
+  // Simulate what the transport does when the device appears, then goes.
+  transport.onDeviceState('streaming', 'Test Pad');
+  transport.onDisconnect({ reason: 'gamepad-gone', error: null });
+
+  assert.deepEqual(states, ['streaming', 'disconnected', 'disconnected-cb'],
+    'the state transition AND the disconnect callback both reach the source — '
+    + 'a UI wants the generic channel for status and the disconnect for the '
+    + 'announcement');
+  assert.equal(src.deviceState, 'disconnected');
+});

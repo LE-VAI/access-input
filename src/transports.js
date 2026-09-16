@@ -74,13 +74,20 @@ export class GamepadTransport {
     this.onPress = options.onPress || null;
     this.onRelease = options.onRelease || null;
     this.onStatus = options.onStatus || null;
+    /** See SerialTransport: a disconnect is announced, not logged. */
+    this.onDisconnect = options.onDisconnect || null;
+    this.onDeviceState = options.onDeviceState || null;
     this._now = options.now || (() => performance.now());
 
     this._raf = 0;
     this._active = false;
     this._pad = null;
     this._wasDown = false;
+    this._deviceState = 'idle';
   }
+
+  /** 'idle' | 'streaming' | 'disconnected'. */
+  get deviceState() { return this._deviceState; }
 
   /** Is the Gamepad API usable in this environment at all? */
   static get supported() {
@@ -142,7 +149,25 @@ export class GamepadTransport {
 
       if (pad && !this._pad) {
         this._pad = pad;
+        this._deviceState = 'streaming';
+        this.onDeviceState?.('streaming', pad.id);
         this.onStatus?.(`Connected: ${pad.id}`);
+      }
+
+      /**
+       * A gamepad that vanishes from getGamepads() has been unplugged or
+       * powered off — the API reports it by omission, with no event and no
+       * error. Without this check a switch user's controller silently stops
+       * working and the most available explanations are about themselves.
+       */
+      if (!pad && this._pad) {
+        const gone = this._pad.id;
+        this._pad = null;
+        this._wasDown = false;
+        this._deviceState = 'disconnected';
+        this.onDeviceState?.('disconnected', gone);
+        this.onDisconnect?.({ reason: 'gamepad-gone', error: null });
+        this.onStatus?.(`Disconnected: ${gone}`);
       }
 
       if (this._pad) {
@@ -202,12 +227,24 @@ export class SerialTransport {
     this.onRelease = options.onRelease || null;
     this.onStatus = options.onStatus || null;
     this.onError = options.onError || null;
+    /**
+     * Device-state channel. `onDisconnect` is separate from `onError` because a
+     * disconnect is not a programming error — it is a thing that happened to
+     * the user's hardware, and it must be announced as such rather than logged.
+     */
+    this.onDisconnect = options.onDisconnect || null;   // ({ reason, error })
+    this.onDeviceState = options.onDeviceState || null; // (state, detail)
     this._port = null;
     this._reader = null;
     this._active = false;
     this._buffer = '';
     this._sampleRateHz = null;
+    this._deviceState = 'idle';
+    this._disconnected = false;
   }
+
+  /** 'idle' | 'connecting' | 'streaming' | 'disconnected'. */
+  get deviceState() { return this._deviceState; }
 
   static get supported() {
     return typeof navigator !== 'undefined' && 'serial' in navigator;
@@ -249,7 +286,21 @@ export class SerialTransport {
         try {
           for (;;) {
             const { value, done } = await this._reader.read();
-            if (done) break;
+            if (done) {
+              /**
+               * The stream ended. If we did not ask it to, the device went
+               * away — unplugged, powered down, out of range.
+               *
+               * This MUST be reported distinctly. A switch user whose device
+               * stops responding reaches for the two most available
+               * explanations first, and both are about themselves: "the switch
+               * is broken" or "I am not pressing hard enough." A silent stream
+               * end hands them that conclusion. Naming the disconnect is the
+               * difference between a five-second fix and a crisis of confidence.
+               */
+              if (this._active) this._reportDisconnect('stream-ended');
+              break;
+            }
             this._buffer += decoder.decode(value, { stream: true });
             // Newline-delimited JSON: a partial line stays buffered.
             let nl;
@@ -264,8 +315,26 @@ export class SerialTransport {
         }
       }
     } catch (e) {
-      if (this._active) this.onError?.(e);
+      if (!this._active) return;
+      // A read failure on an open port is a disconnect in practice; report the
+      // state as well as the error so a UI can act on it.
+      this._reportDisconnect('read-failed', e);
+    } finally {
+      if (this._active) this._setDeviceState('disconnected', 'the device stopped responding');
     }
+  }
+
+  /** Report a disconnect once, with a reason a UI can show a human. */
+  _reportDisconnect(reason, err) {
+    this._disconnected = true;
+    this._setDeviceState('disconnected', reason);
+    this.onDisconnect?.({ reason, error: err ?? null });
+  }
+
+  _setDeviceState(state, detail) {
+    if (this._deviceState === state) return;
+    this._deviceState = state;
+    this.onDeviceState?.(state, detail ?? null);
   }
 
   _handleLine(line) {
