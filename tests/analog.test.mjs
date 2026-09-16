@@ -297,6 +297,30 @@ test('non-finite samples are ignored rather than corrupting state', () => {
   assert.ok(Number.isFinite(det.thresholds.low), 'thresholds stay finite');
 });
 
+test('the lower threshold actually creeps — the tunable is not dead', () => {
+  // Regression: `target` was computed as max(floor, _lowThresh), which right
+  // after calibration equals _lowThresh, so the step was identically zero and
+  // the documented drift absorption never happened. The threshold was
+  // byte-identical after 60s (1.0728 before and after).
+  const { det } = calibratedDetector({ restAmp: 1, noiseAmp: 0.1, peakAmp: 10 });
+  const before = det._lowThresh;
+  let t = 0;
+  for (let i = 0; i < 6000; i++) det.push(1, (t += 10)); // 60s at rest
+  assert.ok(Math.abs(det._lowThresh - before) > 1e-9,
+    `the lower threshold must move — it was ${before} and is now ${det._lowThresh}`);
+});
+
+test('the creeping threshold never falls below the noise floor', () => {
+  // The floor is the guarantee that the detector cannot become trigger-happy:
+  // a threshold at the noise level fires on noise.
+  const { det } = calibratedDetector({ restAmp: 1, noiseAmp: 0.15, peakAmp: 10 });
+  let t = 0;
+  for (let i = 0; i < 12000; i++) det.push(1, (t += 10)); // 2 minutes
+  const floor = det._baseline + ANALOG_DEFAULTS.baselineSigmaMultiplier * det._sigma;
+  assert.ok(det._lowThresh >= floor - 1e-9,
+    `floor violated: low=${det._lowThresh} floor=${floor}`);
+});
+
 test('the creep adapts the floor upward but never below the noise rule', () => {
   // Simulates fatigue/drift: the resting level rises over a long session. The
   // floor should follow it (so the user is not held to an unreachable

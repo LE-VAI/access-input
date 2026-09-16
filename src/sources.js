@@ -732,6 +732,14 @@ export class SignalBridge {
    *   must be granted before the source may deliver anything. Neural-input
    *   tools have a real reason to gate here: reading the signal IS the
    *   processing act, so that is where consent has to bite.
+   * @param {Function} [options.onBlocked] (reason) — called when start() is
+   *   refused by the gate, so a host can explain the refusal instead of looking
+   *   broken.
+   * @param {Function} [options.onConsentLost] — called when a grant is
+   *   withdrawn mid-session. The source is stopped at the hardware boundary
+   *   before this fires.
+   * @param {boolean} [options.stopSourceOnConsentLoss=true] set false only if
+   *   the host manages the device lifecycle itself and knows why.
    */
   constructor(options) {
     this.source = options.source;
@@ -760,6 +768,9 @@ export class SignalBridge {
      */
     this.consent = options.consent || null;
     this.consentPurpose = options.consentPurpose ?? 'acquire_signal';
+    this.onBlocked = options.onBlocked || null;
+    this.onConsentLost = options.onConsentLost || null;
+    this._stopSourceOnConsentLoss = options.stopSourceOnConsentLoss;
 
     this._lastFocused = null;
     this._dwellUsed = false;
@@ -815,8 +826,27 @@ export class SignalBridge {
       return false; // an unreadable gate is not consent
     }
     if (!granted && this._consentWasGranted) {
-      // The grant just went away — stop anything already in progress.
+      /**
+       * The grant just went away. Two things must stop, and only one did.
+       *
+       * `dwell.cancel()` stops the ATTEMPT — the activation in flight. But the
+       * source was left running: a serial port stayed open, a BLE peripheral
+       * stayed connected, a gamepad kept being polled. The biosignal was still
+       * being acquired, digitised, and streamed into the page.
+       *
+       * That is the difference between "we will not act on your signal" and
+       * "we will not read your signal", and for a purpose literally named
+       * `acquire_signal` it is the whole point. Gating the disclosure of a read
+       * body signal is not gating the reading of it.
+       *
+       * The source is stopped here, on the transition, so withdrawal takes
+       * effect at the hardware boundary rather than at the UI boundary.
+       */
       this.dwell.cancel('consent-withdrawn');
+      if (this._stopSourceOnConsentLoss !== false) {
+        try { this.source.stop(); } catch { /* a source that cannot stop must not break the gate */ }
+      }
+      this.onConsentLost?.();
     }
     this._consentWasGranted = granted;
     return granted;
@@ -877,7 +907,28 @@ export class SignalBridge {
   /** Whether the most recent activation came from dwelling (vs. direct). */
   get lastWasDwell() { return this._dwellUsed; }
 
-  async start() { await this.source.start(); }
+  /**
+   * Start the source — GATED.
+   *
+   * Without this check the gate only prevented the bridge from *forwarding*
+   * events. A host that supplied a refusing gate still opened the serial port,
+   * connected the BLE peripheral, and began polling the gamepad: the signal was
+   * being read the whole time, which is precisely what a consent gate for
+   * `acquire_signal` is supposed to prevent.
+   *
+   * Now a refused gate means the device is never opened. The caller is not left
+   * guessing either — `onBlocked` fires so the UI can explain why nothing is
+   * happening, rather than appearing broken.
+   */
+  async start() {
+    if (!this._consentAllows()) {
+      this.onBlocked?.('consent');
+      return false;
+    }
+    const started = await this.source.start();
+    return started === undefined ? true : started;
+  }
+
   stop() {
     this.source.stop();
     this.dwell.cancel('stopped');

@@ -78,11 +78,22 @@ export const ANALOG_DEFAULTS = {
   minThresholdGapFraction: 0.25,
 
   /**
-   * Lower threshold creep: how fast the lower threshold rises toward the
-   * signal when nothing has fired. OpenBCI: "higher = easier activation but
+   * Lower threshold creep: how fast the lower threshold rises toward its
+   * TARGET when nothing has fired. OpenBCI: "higher = easier activation but
    * noisier" — kept slow.
    */
   creepUpFractionPerSecond: 0.02,
+
+  /**
+   * Where the lower threshold creeps TO, as a fraction of the way from the
+   * noise floor toward the user's working peak. A low threshold belongs just
+   * above the noise, not up at the peak, so this stays small.
+   *
+   * This parameter exists because the creep target was previously derived from
+   * the threshold itself, which made the step identically zero — the tunable
+   * was dead and the documented drift absorption never happened.
+   */
+  creepUpTargetFraction: 0.15,
 
   /** Upper threshold creep: how fast it falls when untriggered. "Generally slow." */
   creepDownFractionPerSecond: 0.01,
@@ -500,10 +511,29 @@ export class ActivationDetector {
       this._peakHold = this._baseline + (this._peakHold - this._baseline) * Math.max(0, decay);
     }
 
-    // The lower threshold creeps up toward the signal, so a user whose signal
-    // drifts down is not held to a threshold that is no longer reachable.
+    // The lower threshold creeps up toward the signal's working range, so a
+    // user whose signal drifts down is not held to a threshold that is no
+    // longer reachable.
+    //
+    // This was DEAD CODE and the tunable did nothing. `target` was computed as
+    // `Math.max(floor, this._lowThresh)` — which, immediately after calibration
+    // set `_lowThresh = floor`, equals `_lowThresh` itself, so `target -
+    // _lowThresh` was identically zero and the step was always zero. Verified:
+    // the threshold was byte-identical after 60 seconds of drift
+    // (1.0728 before and after), while the comment claimed a behaviour that did
+    // not exist.
+    //
+    // The target now depends on the SIGNAL rather than on the threshold. The
+    // working range is the calibrated peak, decayed by the same fatigue model
+    // as the upper threshold, so the floor rises toward the user's CURRENT
+    // capability rather than toward itself.
     const floor = this._baseline + this.cfg.baselineSigmaMultiplier * this._sigma;
-    const target = Math.max(floor, this._lowThresh);
+    const workingPeak = this._peakHold != null
+      ? Math.max(this._peakHold, this._calibratedPeak ?? this._peakHold)
+      : floor + 1;
+    // A fraction of the way from the noise floor toward the working peak — the
+    // low threshold should sit just above the noise, not up at the peak.
+    const target = Math.max(floor, floor + (workingPeak - floor) * this.cfg.creepUpTargetFraction);
     const step = this.cfg.creepUpFractionPerSecond * dtSec * (target - this._lowThresh);
     this._lowThresh = this._lowThresh + step;
 

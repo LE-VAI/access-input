@@ -250,7 +250,7 @@ test('CONSENT: WITHDRAWING mid-dwell cancels the in-flight activation', () => {
   assert.equal(events.length, 0, 'a withdrawn grant must stop the activation');
 });
 
-test('CONSENT: withdrawing then re-granting works normally again', () => {
+test('CONSENT: withdrawing then re-granting works normally again', async () => {
   const events = [];
   const gate = fakeGate(true);
   // ONE clock, shared by the source and the engine. ExternalSource stamps
@@ -279,10 +279,18 @@ test('CONSENT: withdrawing then re-granting works normally again', () => {
   run(500, 950);   // heartbeats continue while withdrawn, as a real host's would
   assert.equal(events.length, 1, 'nothing while withdrawn');
 
+  // After a withdrawal the source is STOPPED at the hardware boundary, so
+  // re-granting alone must not silently resume acquisition of a body signal.
+  // The host restarts it deliberately.
+  const stoppedByWithdrawal = !src.active;
+  assert.equal(stoppedByWithdrawal, true,
+    'withdrawal must stop the source, not merely stop acting on it');
+
   gate.grant();
+  await src.start();          // the deliberate re-acquisition
   clock = 1000; src.focus('w3');
   run(1000, 1400);
-  assert.equal(events.length, 2, 're-granting restores normal operation');
+  assert.equal(events.length, 2, 'after restarting, re-granting works normally');
 });
 
 test('CONSENT: a direct source is gated too', () => {
@@ -349,6 +357,71 @@ test('CONSENT: a custom purpose name is honored', () => {
   src.focus('w1', 0);
   assert.ok(asked.includes('process_locally'),
     'the bridge asks about the purpose it was told to');
+});
+
+test('CONSENT: a refused gate prevents the DEVICE from opening', () => {
+  // The gate previously only stopped the bridge from FORWARDING events. The
+  // serial port still opened and the biosignal was still being read — the
+  // difference between "we will not act on it" and "we will not read it".
+  let startCalls = 0;
+  const blocked = [];
+  const src = {
+    _active: false,
+    capabilities: { continuous: false, direct: true, targets: false, twoAxis: false },
+    onFocus: null, onSelect: null, onCancel: null,
+    async start() { startCalls++; this._active = true; },
+    stop() { this._active = false; },
+  };
+  const gate = fakeGate(false);
+  const dwell = new DwellEngine({ dwellMs: 300 });
+  const bridge = new SignalBridge({ source: src, dwell, consent: gate,
+    onBlocked: (r) => blocked.push(r) });
+
+  return bridge.start().then((started) => {
+    assert.equal(started, false, 'start() must report that it was refused');
+    assert.equal(startCalls, 0, 'the device must not be opened at all');
+    assert.deepEqual(blocked, ['consent'], 'and the host is told why');
+  });
+});
+
+test('CONSENT: withdrawal stops the source at the hardware boundary', () => {
+  let stopped = false;
+  const lost = [];
+  const src = {
+    _active: true,
+    capabilities: { continuous: false, direct: true, targets: false, twoAxis: false },
+    onFocus: null, onSelect: null, onCancel: null,
+    async start() { this._active = true; },
+    stop() { stopped = true; this._active = false; },
+  };
+  const gate = fakeGate(true);
+  const dwell = new DwellEngine({ dwellMs: 300 });
+  const bridge = new SignalBridge({ source: src, dwell, consent: gate, mode: 'direct',
+    onConsentLost: () => lost.push(1) });
+  bridge.stop = () => {};   // isolate: we are testing the gate, not teardown
+  bridge._consentWasGranted = true;
+
+  gate.withdraw();
+  const allowed = bridge._consentAllows();
+  assert.equal(allowed, false);
+  assert.equal(stopped, true, 'the device must stop being read');
+  assert.deepEqual(lost, [1], 'and the host is notified');
+});
+
+test('CONSENT: a source that throws on stop() does not break the gate', () => {
+  const src = {
+    _active: true,
+    capabilities: { continuous: false, direct: true, targets: false, twoAxis: false },
+    onFocus: null, onSelect: null, onCancel: null,
+    async start() {}, stop() { throw new Error('device is wedged'); },
+  };
+  const gate = fakeGate(true);
+  const dwell = new DwellEngine({ dwellMs: 300 });
+  const bridge = new SignalBridge({ source: src, dwell, consent: gate });
+  bridge._consentWasGranted = true;
+  gate.withdraw();
+  assert.doesNotThrow(() => bridge._consentAllows(),
+    'a wedged device must not take the consent check down with it');
 });
 
 // -- switch behaviour -------------------------------------------------------
