@@ -225,6 +225,47 @@ test('release is reported when the effort ends', () => {
   assert.equal(released.length, 1, 'released after the signal falls');
 });
 
+// -- CRITICAL: the idle-gap lockout ----------------------------------------
+
+test('CRITICAL: an idle gap must NOT lock the detector out', () => {
+  // The worst failure this module can have, because the user reads it as their
+  // own body failing rather than the software.
+  //
+  // The spike clamp's tolerance was computed from `_peakHold`, which decays
+  // toward baseline whenever the user is not activating. Both collapsed
+  // together: after ~3 minutes of resting, headroom reached zero, the tolerance
+  // collapsed, and every effort was replaced by the last good sample. Verified
+  // before the fix — peakHold 9.82 -> 2.46 after 180s, and a raw effort of 10
+  // clamped to 1.000, below the 1.07 threshold. No press, no error, nothing.
+  const { det } = calibratedDetector({ restAmp: 1, noiseAmp: 0.1, peakAmp: 10 });
+  let t = 0;
+  for (let i = 0; i < 200; i++) det.push(1, (t += 10));
+
+  // Three minutes of rest — a break, a conversation, a caregiver's pause.
+  for (let i = 0; i < 18000; i++) det.push(1, (t += 10));
+
+  // The user's normal effort.
+  const fired = [];
+  det.onPress = () => fired.push(1);
+  for (let i = 0; i < 100; i++) det.push(10, (t += 10));
+
+  assert.equal(fired.length, 1,
+    'a real effort after a rest must still activate — silence here means the user ' +
+    'concludes their body stopped working');
+});
+
+test('_peakHold still decays — the clamp fix must not disable fatigue adaptation', () => {
+  // The fix must be surgical: the clamp stops depending on the decayed value,
+  // but the decay itself is what absorbs fatigue and must remain.
+  const { det } = calibratedDetector({ restAmp: 1, noiseAmp: 0.1, peakAmp: 10 });
+  let t = 0;
+  for (let i = 0; i < 200; i++) det.push(1, (t += 10));
+  const peakBefore = det._peakHold;
+  for (let i = 0; i < 6000; i++) det.push(1, (t += 10)); // 60s rest
+  assert.ok(det._peakHold < peakBefore, 'peakHold must still decay — that is the fatigue model');
+  assert.equal(det._calibratedPeak, 10, 'but the calibrated peak is immutable');
+});
+
 // -- robustness -------------------------------------------------------------
 
 test('a single huge spike does not fire and does not poison the baseline', () => {

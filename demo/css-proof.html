@@ -1,0 +1,33 @@
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>CSS delivery proof — AFTER</title>
+<style>body{background:#0b0c0f;color:#f5f5f7;font:16px/1.7 sans-serif;padding:40px;max-width:700px}</style>
+</head><body>
+<h1>Does the karaoke highlight paint now?</h1>
+<p id="status">loading…</p>
+<read-along id="ra" rate="1">
+  <p>The quick brown fox jumps over the lazy dog and keeps running onward.</p>
+</read-along>
+<script type="module">
+// Loaded from the LOCAL source so this tests the fix, not the published version.
+await import('http://127.0.0.1:8795/../read-along/src/read-along.js').catch(async () => {
+  await import('/src/read-along.js');  // fallback if the relative path misses
+});
+const el = document.getElementById('ra');
+el.play();
+await new Promise(r => setTimeout(r, 2000));
+const hl = CSS.highlights.get('read-along-word');
+let rules = 0, adopted = 0;
+for (const s of document.styleSheets) {
+  try { for (const r of s.cssRules) if (String(r.cssText).includes('::highlight')) rules++; } catch(e){}
+}
+adopted = document.adoptedStyleSheets.filter(s => s.__readAlong).length;
+window.__proof = {
+  highlightApiSupported: typeof Highlight !== 'undefined',
+  rangeCount: hl ? hl.size : 0,
+  activeToken: el.activeToken,
+  highlightRulesInDocument: rules,
+  adoptedSheets: adopted,
+  verdict: rules > 0 ? 'RULES PRESENT — highlight can paint' : 'STILL MISSING',
+};
+document.getElementById('status').textContent = window.__proof.verdict;
+</script></body></html>

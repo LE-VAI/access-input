@@ -220,7 +220,8 @@ export class ActivationDetector {
     this._sigma = 0;           // robust noise estimate
     this._lowThresh = null;
     this._highThresh = null;
-    this._peakHold = null;
+    this._peakHold = null;      // decays; tracks the CURRENT working range
+    this._calibratedPeak = null; // immutable; the largest effort this user has produced
 
     // Activation FSM
     this._pressed = false;
@@ -276,6 +277,10 @@ export class ActivationDetector {
     // at the fraction of the usable range the user can comfortably sustain.
     this._highThresh = floor + (maxLevel - floor) * 0.55;
     this._peakHold = maxLevel;
+    // Immutable for the life of this calibration. The clamp uses it as the
+    // floor for its tolerance, so a real effort stays admissible no matter how
+    // far _peakHold has decayed (see _clamped).
+    this._calibratedPeak = maxLevel;
     this.calibrated = true;
     return { ok: true, thresholds: this.thresholds };
   }
@@ -347,6 +352,7 @@ export class ActivationDetector {
     this._lowThresh = null;
     this._highThresh = null;
     this._peakHold = null;
+    this._calibratedPeak = null;
     this._pressed = false;
     this._aboveSince = null;
     this._belowSince = null;
@@ -412,12 +418,36 @@ export class ActivationDetector {
 
     let tolerance = noiseTolerance;
     if (this._peakHold != null) {
-      const headroom = Math.abs(this._peakHold - med);
-      // Never below the calibrated peak (must admit a real effort); never far
-      // above it either (must reject a pop).
+      /**
+       * The headroom is measured against the CALIBRATED peak, not the decayed
+       * one, and this is the fix for a total silent lockout.
+       *
+       * `_peakHold` deliberately decays toward baseline whenever the user is
+       * not activating — that is what absorbs fatigue. But the clamp tolerance
+       * was computed FROM it, so both collapsed together: after roughly three
+       * minutes of resting (or any break, or a caregiver pausing), headroom
+       * reached ~0, the tolerance collapsed to zero, and every sample above the
+       * median was replaced by `_lastGoodRaw`. A full-effort activation then
+       * clamped to the noise floor and the detector went deaf.
+       *
+       * Verified before the fix: peakHold 9.82 -> 2.46 after 180s idle, and a
+       * raw effort of 10 clamped to 1.000 — below the 1.07 threshold, so no
+       * press. The detector reported nothing and the user had no way to know
+       * their body was fine; the software had stopped listening. That is the
+       * worst failure this module can have, because the interpretation a user
+       * reaches first is about themselves.
+       *
+       * `_calibratedPeak` is therefore immutable for the life of the
+       * calibration: a real effort must always be admissible. The decaying
+       * `_peakHold` keeps its job of tracking the CURRENT working range for the
+       * thresholds, where decay is correct.
+       */
+      const reference = Math.max(Math.abs(this._peakHold - med), Math.abs(this._calibratedPeak - med));
+      // Never below what the user has actually produced (must admit a real
+      // effort); never far above it either (must still reject a pop).
       tolerance = Math.min(
-        Math.max(noiseTolerance, headroom * 1.05),
-        headroom * this.cfg.spikeClampPeakMultiplier,
+        Math.max(noiseTolerance, reference * 1.05),
+        reference * this.cfg.spikeClampPeakMultiplier,
       );
     }
     tolerance = Math.max(tolerance, 1e-9);
