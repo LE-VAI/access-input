@@ -312,6 +312,11 @@ function bindDetector() {
     announce('Press detected.');
   };
   det.onRelease = () => { lampEl.dataset.on = 'no'; lampEl.textContent = 'no press'; };
+  // A fresh detector has never fired, so the lamp must not claim it has.
+  // Resetting state without resetting the display that reflects it is how a
+  // UI ends up lying during the exact moment a user is calibrating.
+  lampEl.dataset.on = 'no';
+  lampEl.textContent = 'no press';
 }
 
 // --- calibration ----------------------------------------------------------
