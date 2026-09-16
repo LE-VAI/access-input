@@ -121,6 +121,22 @@ python -m http.server 8795
 
 The demo switches live between pointer-dwell, single-switch auto-scan, and keyboard, over both a reading surface and a plain four-cell grid — to show the input layer does not care what the content is. Watch the amber ring fill as you rest on a word: that fill is the dwell, and the word activates when it completes.
 
+## TypeScript
+
+Ships hand-written types — no build step, no generated `dist/`. A custom element's public surface is a deliberate API, and types generated from source freeze implementation details (private fields, internal helper shapes) into a published contract that then cannot change without a breaking version.
+
+```ts
+import { DwellEngine, type CalibrationResult } from 'access-input';
+
+const dwell = new DwellEngine({ dwellMs: 600, leaveToRearm: true });
+dwell.setRepeatTargets({ 'volume-up': 400 });   // per-target rate is typed
+
+const r: CalibrationResult = detector.calibrate(baseline, sigma, peak);
+if (!r.ok) show(r.detail);   // `reason`/`detail` exist only on the failure branch
+```
+
+Verified by consuming them in a strict-mode project: correct usage compiles, and deliberate misuse (wrong option type, typo'd option name, missing argument, unknown property, malformed capability object) is caught.
+
 ## The full stack, running
 
 [demo/stack.html](demo/stack.html) wires all three libraries together with nothing but their published CDNs — no build step, no shared internals:

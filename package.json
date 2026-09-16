@@ -5,7 +5,10 @@
   "type": "module",
   "main": "src/index.js",
   "exports": {
-    ".": "./src/index.js",
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    },
     "./dwell.js": "./src/dwell.js",
     "./sources.js": "./src/sources.js",
     "./read-along.js": "./src/read-along.js",
@@ -48,5 +51,6 @@
   "homepage": "https://github.com/LE-VAI/access-input#readme",
   "engines": {
     "node": ">=18"
-  }
+  },
+  "types": "./src/index.d.ts"
 }

@@ -55,6 +55,42 @@ jobs:
           done
           echo "all modules parse"
 
+  package:
+    name: Package surface
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Every shipped file is importable
+        # A file present in `files` but absent from `exports` is published yet
+        # unreachable — an integrator following the docs hits
+        # ERR_PACKAGE_PATH_NOT_EXPORTED, and a workaround can fail SILENTLY
+        # (the read-along stylesheet produced a no-paint with no error). This
+        # job makes that class impossible to ship.
+        run: python3 scripts/audit-exports.py
+
+      - name: The type definitions compile and catch misuse
+        run: |
+          npm install --no-save typescript@5
+          cat > /tmp/consumer.ts <<'TS'
+          import { DwellEngine, SignalBridge, ExternalSource, ActivationDetector,
+                   type ConsentGate, type CalibrationResult } from 'access-input';
+          const gate: ConsentGate = { isGranted: () => true };
+          const dwell = new DwellEngine({ dwellMs: 600, leaveToRearm: true });
+          new SignalBridge({ source: new ExternalSource(), dwell, consent: gate });
+          dwell.setRepeatTargets({ 'volume-up': 400 });
+          const r: CalibrationResult = new ActivationDetector().calibrate(1, 0.1, 10);
+          void r;
+          TS
+          mkdir -p /tmp/tstest && cd /tmp/tstest
+          npm init -y >/dev/null
+          npm install "$GITHUB_WORKSPACE" --silent
+          cp /tmp/consumer.ts .
+          npx tsc --noEmit --strict --target es2022 --module esnext             --moduleResolution bundler consumer.ts
+
   demo:
     name: Demo loads
     runs-on: ubuntu-latest
