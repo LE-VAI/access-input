@@ -125,6 +125,32 @@ export const ANALOG_DEFAULTS = {
   /** Refractory: no new press within this of the last. */
   refractoryMs: 300,
 
+  /**
+   * How long after an activation the host may still report it as unintended
+   * and have it count as such.
+   *
+   * This is the window in which "undo" means the same thing as "that was not
+   * me" — a user who reverses an action within a second is complaining about
+   * the activation. A reversal ten seconds later is a change of mind about the
+   * ACTION, not evidence about the trigger, and counting it would make the
+   * misfire rate track the user's editing behaviour instead of the device.
+   */
+  undoWindowMs: 1500,
+
+  /**
+   * Episode duration at or above which a completed activation is credited as
+   * INTENTIONAL rather than ambiguous, when no independent witness is
+   * available.
+   *
+   * See docs/MEASUREMENT-PROTOCOL.md §2.1 — the three-way split. A held
+   * activation that ran a long time is much more likely to be a deliberate
+   * press the user then abandoned than a spurious trigger; a brief one at the
+   * threshold is the reverse. This is a stated parameter precisely because it
+   * decides how much of the number came from the signal and how much from this
+   * choice, and the classifier reports the split so a reader can see it.
+   */
+  intentionalHoldMs: 400,
+
   /** Spike clamp: samples above median + this many MADs are clamped. */
   spikeClampMad: 6,
 
@@ -591,7 +617,14 @@ export class ActivationDetector {
         this._pressed = true;
         this._belowSince = null;
         this._lastPressAt = tMs;
-        this.onPress?.(tMs, level);
+        // `heldMs` is the duration the signal spent above the lower threshold
+        // before this activation fired. It is what lets the outcome classifier
+        // distinguish a deliberate press the user abandons from a spurious
+        // trigger — see intentionalHoldMs. Passing it here rather than
+        // recomputing downstream means the number comes from the same clock the
+        // decision did.
+        this._lastHeldMs = heldFor;
+        this.onPress?.(tMs, level, { heldMs: heldFor, threshold: this._highThresh });
       }
       return;
     }

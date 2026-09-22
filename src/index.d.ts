@@ -473,3 +473,138 @@ export declare class ReadAlongInputHost {
   pause(): void;
   resume(): void;
 }
+
+// ---------------------------------------------------------------------------
+// Measurement — outcome classification and session accounting
+// ---------------------------------------------------------------------------
+
+/**
+ * How an activation ended, as the HOST observed it. The host is the only party
+ * that knows what "undo" means in its own interface.
+ */
+export type Witness = 'confirmed' | 'undone' | 'unknown';
+
+/**
+ * The classification of one activation.
+ *
+ * `'ambiguous'` is the category that matters: an activation that crossed
+ * threshold with nothing confirming intent. It is either a false activation or
+ * an abandoned attempt, and the signal alone does not say which — so it is
+ * reported ALONGSIDE the rate rather than folded into it. Counting an abandoned
+ * attempt as a device misfire would make the number track the user's
+ * decision-making instead of the hardware.
+ */
+export type ActivationOutcome = 'true' | 'ambiguous' | 'false';
+
+export declare const OUTCOMES: {
+  readonly TRUE: 'true';
+  readonly AMBIGUOUS: 'ambiguous';
+  readonly FALSE: 'false';
+};
+
+/**
+ * The two denominators a rate can be reported against. "Per hour of use" is
+ * ambiguous in a way that changes the answer by a factor of two — an hour of
+ * watching a video with the switch armed and an hour of selection work are
+ * different exposures.
+ */
+export declare const DENOMINATORS: {
+  /** Armed: the signal was live and could fire. */
+  readonly ARMED: 'armed';
+  /** Active: the user was working at selection. */
+  readonly ACTIVE: 'active';
+};
+
+/**
+ * Engineering values with no published counterpart — no validated per-hour
+ * figure exists to calibrate against. Echoed in every report so a reader can
+ * see how much of the number came from the signal and how much from the choice.
+ */
+export declare const MEASURE_DEFAULTS: {
+  /** Held at least this long → credited as intentional absent a witness. */
+  intentionalHoldMs: number;
+  /** Held at most this long and reversed → strongly reads as a spurious trigger. */
+  spuriousHoldMs: number;
+  /** An undo inside this window counts as evidence about the ACTIVATION. */
+  undoWindowMs: number;
+};
+
+export interface Classification {
+  outcome: ActivationOutcome;
+  /** Why — always present, so every verdict is auditable. */
+  basis: string;
+}
+
+export declare function classifyActivation(
+  ev: { tMs: number; heldMs?: number; witness?: Witness; undoAtMs?: number },
+  cfg?: Partial<typeof MEASURE_DEFAULTS>,
+): Classification;
+
+export interface ActivationEntry {
+  tMs: number;
+  heldMs: number | null;
+  witness: Witness;
+  outcome: ActivationOutcome;
+  basis: string;
+  undoAtMs?: number;
+}
+
+export interface MeasureReport {
+  sessionId: string | null;
+  denominator: 'armed' | 'active';
+  denominatorMs: number;
+  denominatorHours: number;
+  /**
+   * False activations per hour. `null` — never 0 — when the denominator is
+   * zero: an absent denominator is not a rate of zero, and returning 0 would
+   * read as "no misfires" when it means "no measurement".
+   */
+  falsePerHour: number | null;
+  ambiguousPerHour: number | null;
+  truePerHour: number | null;
+  counts: { true: number; ambiguous: number; false: number; total: number };
+  /**
+   * Whether ANY independent witness backed these verdicts. `false` means every
+   * classification came from `intentionalHoldMs`, so the rate measures the
+   * parameter as much as the device — and the report says so rather than
+   * presenting a parameterised guess as a measurement.
+   */
+  witnessed: boolean;
+  parameters: typeof MEASURE_DEFAULTS;
+  activations: ActivationEntry[];
+}
+
+export declare class AccessOutcomeCounter {
+  constructor(options?: {
+    sessionId?: string;
+    intentionalHoldMs?: number;
+    spuriousHoldMs?: number;
+    undoWindowMs?: number;
+    now?: () => number;
+  });
+
+  sessionId: string | null;
+  activations: ActivationEntry[];
+  armedMs: number;
+  activeMs: number;
+  witnessed: boolean;
+
+  /** The device became live. */
+  armed(tMs?: number): void;
+  /** The device stopped. `meta.activeMs` records work done while armed. */
+  disarm(tMs?: number, meta?: { activeMs?: number }): void;
+  /** Add active-use time directly, for hosts that meter it separately. */
+  activeDuration(ms: number): void;
+
+  /** Record an activation; returns the entry including its classification. */
+  activation(ev?: { tMs?: number; heldMs?: number; witness?: Witness; undoAtMs?: number }): ActivationEntry;
+  /** The host observed an undo. Matched to the most recent activation. */
+  undo(tMs?: number): ActivationEntry | null;
+  /** The host confirms an activation was used. Strongest evidence available. */
+  confirm(tMs?: number): ActivationEntry | null;
+
+  counts(): { true: number; ambiguous: number; false: number; total: number };
+  report(options?: { denominator?: 'armed' | 'active' }): MeasureReport;
+  /** Versioned schema (`activation-measure/1`) for cross-implementation comparison. */
+  toJSON(options?: { denominator?: 'armed' | 'active' }): MeasureReport & { schema: string };
+}

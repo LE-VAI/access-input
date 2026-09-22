@@ -87,13 +87,25 @@ jobs:
           # POSITIVE: correct usage against the published surface must compile.
           cat > consumer.ts <<'TS'
           import { DwellEngine, SignalBridge, ExternalSource, ActivationDetector,
-                   type ConsentGate, type CalibrationResult } from 'access-input';
+                   AccessOutcomeCounter, classifyActivation, OUTCOMES, DENOMINATORS,
+                   type ConsentGate, type CalibrationResult, type MeasureReport,
+                   type Witness } from 'access-input';
           const gate: ConsentGate = { isGranted: () => true };
           const dwell = new DwellEngine({ dwellMs: 600, leaveToRearm: true });
           new SignalBridge({ source: new ExternalSource(), dwell, consent: gate });
           dwell.setRepeatTargets({ 'volume-up': 400 });
           const r: CalibrationResult = new ActivationDetector().calibrate(1, 0.1, 10);
           void r;
+
+          // The measurement surface: the number must never be an unchecked fact.
+          const c = new AccessOutcomeCounter({ sessionId: 'day-1' });
+          c.armed(0);
+          const w: Witness = 'undone';
+          c.activation({ tMs: 1000, heldMs: 120, witness: w, undoAtMs: 1200 });
+          c.disarm(3600000, { activeMs: 120000 });
+          const rep: MeasureReport = c.report({ denominator: DENOMINATORS.ACTIVE });
+          const perHour: number | null = rep.falsePerHour;
+          void [perHour, rep.witnessed, classifyActivation({ tMs: 0 }).basis, OUTCOMES.TRUE];
           TS
           ./node_modules/.bin/tsc --noEmit --strict --target es2022             --module esnext --moduleResolution bundler consumer.ts
 
@@ -101,11 +113,21 @@ jobs:
           # correct code are decoration — they document intent without
           # enforcing it, and an integrator gets no protection from them.
           cat > misuse.ts <<'TS'
-          import { DwellEngine } from 'access-input';
+          import { DwellEngine, AccessOutcomeCounter, classifyActivation } from 'access-input';
           new DwellEngine({ dwellMs: 'fast' });      // wrong type
           new DwellEngine({ dwelllMs: 600 });        // typo'd option
           const d = new DwellEngine();
           d.enter('w1');                             // missing argument
+
+          // The measurement surface must reject misuse too. A rate that is
+          // number|null but typed as number would let an integrator compare an
+          // unmeasured device as if it scored zero.
+          const c = new AccessOutcomeCounter();
+          c.activation({ witness: 'maybe' });                     // not a Witness
+          c.report({ denominator: 'hourly' });                    // not a denominator
+          classifyActivation({ tMs: 0 }, { intentionalHoldMs: '400' });
+          const bad: string = c.report().falsePerHour!;           // number|null
+          void bad;
           TS
           if ./node_modules/.bin/tsc --noEmit --strict --target es2022                --module esnext --moduleResolution bundler misuse.ts 2>/dev/null; then
             echo "FAIL: misuse compiled — the types do not enforce the API"

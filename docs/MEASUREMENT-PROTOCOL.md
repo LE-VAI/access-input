@@ -137,6 +137,62 @@ which skewed the very timings it existed to tune. `ABANDON_FLOOR` was the fix.
 The lesson generalises: **the ambiguous middle must be its own category, or it
 silently contaminates both sides of the ratio.**
 
+### 2.2 This is executable, not just argued
+
+`src/measure.js` implements the three-outcome split, so the protocol describes
+something that runs rather than something that reasons. Two pieces:
+
+**`classifyActivation(ev, cfg)`** — one activation, from the evidence available.
+A host confirmation is decisive. An undo *inside* `undoWindowMs` is evidence
+about the trigger; **outside it, the user changed their mind about the action,
+not about the activation**, and scoring that as a misfire would inflate the rate
+with editing behaviour. An in-window undo after a *brief* hold reads as spurious;
+after a *long* hold it is ambiguous, because that is a deliberate press the user
+thought better of. With no witness at all, a long hold is credited as intentional
+**by duration** — and the returned `basis` string says so, so no verdict is
+opaque.
+
+**`AccessOutcomeCounter`** — the session accounting. Two properties are load-
+bearing and both are tested:
+
+- **An absent denominator is `null`, never `0`.** `falsePerHour: 0` reads as "no
+  misfires"; the truth is "no measurement". A device nobody measured must not
+  look like a perfect one.
+- **`witnessed: false` is reported, not buried.** It means every classification
+  came from `intentionalHoldMs` — a parameter we chose — so the rate measures our
+  threshold as much as the device. A caller who supplies no witness gets told
+  what they got instead of being left to assume it is a measurement.
+
+The parameters are echoed into every report for the same reason: the point of
+§2.1 is that a reader must be able to see how much of the number came from the
+signal and how much from a choice.
+
+```js
+import { AccessOutcomeCounter, DENOMINATORS } from 'access-input';
+
+const c = new AccessOutcomeCounter({ sessionId: 'day-1' });
+c.armed(0);
+c.activation({ tMs: 1200, heldMs: 120, witness: 'undone', undoAtMs: 1400 });
+c.disarm(3600000, { activeMs: 1800000 });   // armed 1 h, of which 30 min was work
+
+c.report({ denominator: DENOMINATORS.ARMED });
+// { falsePerHour: 1, ambiguousPerHour: 0, witnessed: true,
+//   parameters: { intentionalHoldMs: 400, ... }, counts: {...}, activations: [...] }
+c.report({ denominator: DENOMINATORS.ACTIVE });   // the same events, half the exposure
+// → falsePerHour: 2      <- the denominator is not decoration
+```
+
+**Record active time ONE way, not both.** `disarm(tMs, { activeMs })` and
+`activeDuration(ms)` both ADD to the same accumulator — correct for separate
+intervals, silently doubling if you use both for the same one. (This bit the
+example above while it was being written: the first draft passed active time
+through both paths and reported `1` where it claimed `2`. The doc now shows the
+single path.)
+
+The defaults in `MEASURE_DEFAULTS` are engineering values with no published
+counterpart, which is the premise of this entire document. They are stated,
+overridable, and echoed — never hidden.
+
 ---
 
 ## 3. The procedure
