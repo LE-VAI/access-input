@@ -72,10 +72,43 @@ export const DENOMINATORS = {
 export const MEASURE_DEFAULTS = {
   /** Held at least this long → credited as intentional absent a witness. */
   intentionalHoldMs: 400,
+
+  /**
+   * Minimum exposure, in ms, before a per-hour rate is allowed to be expressed.
+   *
+   * A rate extrapolated from seconds is not a measurement. A 25-second session
+   * reporting "0 false activations per hour" says nothing at all — and worse, it
+   * says it in the same units as a real measurement, so a reader comparing two
+   * devices could treat an untested one as perfect. Fifteen minutes is not a
+   * validated figure either (nothing in this field is — that is the premise of
+   * the whole protocol); it is the point below which the extrapolation is
+   * obviously meaningless rather than merely unvalidated.
+   *
+   * Below it, `report()` returns `rateWithheld: true` and the CLI refuses to
+   * print a per-hour figure. The counts are still reported — the observations
+   * happened — but the rate is not claimed.
+   */
+  minExposureMs: 900000,
   /**
    * Held at most this long and then reversed → strongly reads as a spurious
    * trigger rather than a change of mind, because there was barely an
    * activation to change one's mind about.
+   *
+   * WHAT THIS THRESHOLD CANNOT DO FOR DWELL. A dwell activation cannot complete
+   * in under `lockOnMs + dwellMs` — 750ms with the library's defaults — because
+   * the signal must clear lock-on and then accumulate the full dwell before
+   * anything fires. So a COMPLETED dwell is never "brief" in this sense, and
+   * every undone dwell activation lands in `ambiguous` rather than `false`.
+   *
+   * That is correct behaviour, not a limitation to paper over: a dwell that
+   * fired means the user rested on a target for 750ms, which is real evidence
+   * of intent that a sub-threshold twitch does not carry. This split
+   * discriminates for DIRECT sources (switch, keyboard, an EMG trigger), where
+   * an activation can genuinely be momentary.
+   *
+   * Recorded because it was found by building the conformance scenario: the
+   * first "brief misfire" step held 790ms and could not have been briefer, and
+   * the resulting `false: 0` looked like a bug until the arithmetic was checked.
    */
   spuriousHoldMs: 250,
   /** An undo inside this window of the activation counts as evidence about it. */
@@ -179,6 +212,7 @@ export class AccessOutcomeCounter {
       intentionalHoldMs: options.intentionalHoldMs ?? MEASURE_DEFAULTS.intentionalHoldMs,
       spuriousHoldMs: options.spuriousHoldMs ?? MEASURE_DEFAULTS.spuriousHoldMs,
       undoWindowMs: options.undoWindowMs ?? MEASURE_DEFAULTS.undoWindowMs,
+      minExposureMs: options.minExposureMs ?? MEASURE_DEFAULTS.minExposureMs,
     };
     this._now = options.now ?? (() => 0);
 
@@ -324,20 +358,37 @@ export class AccessOutcomeCounter {
     const hours = ms > 0 ? ms / 3600000 : 0;
     const c = this.counts();
 
+    /**
+     * A rate needs enough exposure to mean anything. Below the floor the
+     * per-hour figures are withheld rather than extrapolated — see
+     * MEASURE_DEFAULTS.minExposureMs.
+     */
+    const tooShort = ms < this.cfg.minExposureMs;
+    const rateOf = (n) => (hours > 0 && !tooShort ? Math.round((n / hours) * 10) / 10 : null);
+
     return {
       sessionId: this.sessionId,
       denominator,
       denominatorMs: ms,
       denominatorHours: Math.round(hours * 1000) / 1000,
 
+      /**
+       * True when the exposure was too short for a per-hour figure. Reported so
+       * a caller cannot mistake a withheld rate for a measured one — and so the
+       * CLI can say WHY it is not printing a number.
+       */
+      rateWithheld: tooShort,
+      minExposureMs: this.cfg.minExposureMs,
+
       // THE NUMBER. False activations per hour, against the named denominator.
-      falsePerHour: hours > 0 ? Math.round((c.false / hours) * 10) / 10 : null,
+      // Null when there was no exposure OR too little of it.
+      falsePerHour: rateOf(c.false),
 
       // The ambiguous middle, reported SEPARATELY and never folded in — see the
       // module header. A reader must be able to see how much of the evidence
       // was decided by a parameter rather than by the signal.
-      ambiguousPerHour: hours > 0 ? Math.round((c.ambiguous / hours) * 10) / 10 : null,
-      truePerHour: hours > 0 ? Math.round((c.true / hours) * 10) / 10 : null,
+      ambiguousPerHour: rateOf(c.ambiguous),
+      truePerHour: rateOf(c.true),
 
       counts: c,
 

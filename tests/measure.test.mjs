@@ -239,3 +239,49 @@ test('active time accumulates from BOTH paths — so record it one way, not both
   assert.equal(twoIntervals.report({ denominator: DENOMINATORS.ACTIVE }).denominatorHours, 0.167,
     'two separate intervals sum correctly');
 });
+
+test('CRITICAL: a rate is WITHHELD when the exposure is too short to mean anything', () => {
+  // A 25-second session reporting "0 false activations per hour" says nothing —
+  // and says it in the same units as a real measurement, so a reader comparing
+  // two devices could treat an untested one as perfect. This was found by
+  // running the conformance CLI, which printed exactly that.
+  const c = new AccessOutcomeCounter();
+  c.armed(0);
+  c.disarm(25000);                    // 25 seconds
+  c.activation({ tMs: 100, heldMs: 700 });
+
+  const r = c.report();
+  assert.equal(r.rateWithheld, true, 'the report says the rate is withheld');
+  assert.equal(r.falsePerHour, null, 'and does not print a per-hour figure');
+  assert.equal(r.ambiguousPerHour, null);
+  assert.equal(r.truePerHour, null);
+  assert.equal(r.counts.total, 1, 'the observations are still counted — they happened');
+  assert.ok(r.denominatorMs > 0, 'the exposure is still reported');
+});
+
+test('a sufficient exposure produces a rate', () => {
+  const c = new AccessOutcomeCounter();
+  c.armed(0);
+  c.disarm(1800000);                  // 30 minutes, over the 15-minute floor
+  // A BRIEF hold reversed in-window — the only shape that yields FALSE. A 700ms
+  // hold is too long to read as spurious (it clears intentionalHoldMs), so it
+  // would land in ambiguous; that distinction is the point of the split.
+  c.activation({ tMs: 100, heldMs: 120, witness: 'undone', undoAtMs: 150 });
+  c.activation({ tMs: 200, heldMs: 900, witness: 'confirmed' });
+  const r = c.report();
+  assert.equal(r.rateWithheld, false);
+  assert.equal(r.falsePerHour, 2, 'one false in half an hour = 2/hour');
+  assert.equal(r.truePerHour, 2, 'one true in the same exposure');
+  assert.equal(r.counts.false, 1);
+});
+
+test('the exposure floor is configurable and reported', () => {
+  const strict = new AccessOutcomeCounter({ minExposureMs: 3600000 });  // require a full hour
+  strict.armed(0); strict.disarm(1800000);                             // 30 min
+  assert.equal(strict.report().rateWithheld, true, '30 min is under a 1h floor');
+  assert.equal(strict.report().minExposureMs, 3600000, 'the floor is echoed');
+
+  const loose = new AccessOutcomeCounter({ minExposureMs: 1000 });
+  loose.armed(0); loose.disarm(2000);
+  assert.equal(loose.report().rateWithheld, false, '2s clears a 1s floor');
+});
