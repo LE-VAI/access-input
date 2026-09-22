@@ -270,12 +270,12 @@ test('CONSENT: withdrawing then re-granting works normally again', async () => {
     clock = to;
   };
 
-  clock = 0; src.focus('w1');
+  clock = 0; src.focus('w1', clock);
   run(0, 400);
   assert.equal(events.length, 1);
 
   gate.withdraw();
-  clock = 500; src.focus('w2');
+  clock = 500; src.focus('w2', clock);
   run(500, 950);   // heartbeats continue while withdrawn, as a real host's would
   assert.equal(events.length, 1, 'nothing while withdrawn');
 
@@ -288,7 +288,7 @@ test('CONSENT: withdrawing then re-granting works normally again', async () => {
 
   gate.grant();
   await src.start();          // the deliberate re-acquisition
-  clock = 1000; src.focus('w3');
+  clock = 1000; src.focus('w3', clock);
   run(1000, 1400);
   assert.equal(events.length, 2, 'after restarting, re-granting works normally');
 });

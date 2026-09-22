@@ -98,6 +98,45 @@ with the switch armed are different exposures. So record **both**:
 Report both. A design that misfires during video playback has a different defect
 from one that misfires during selection, and one number hides that.
 
+### 2.1 The intent problem, and why the three-way split is mandatory
+
+**Unintentional activation has no ground truth without an independent intent
+signal.** For dwell-based gaze this is fatal: a long fixation is either intent or
+a lapse, and nothing in the signal separates them. Any rate that pretends
+otherwise is a measurement of the task, not of the device.
+
+Where a **second channel** exists — a microphone, a second modality, a host that
+reports what actually happened — intent becomes observable, and the two channels
+can disagree. That disagreement is where the measurement lives. But it produces
+**three** outcomes, not two, and collapsing them is the single easiest way to
+ruin the number:
+
+| crossed threshold | independent intent witness | classification |
+|---|---|---|
+| yes | yes | **true activation** |
+| yes | no | **ambiguous** — false activation, or abandoned intent |
+| no | — | not an episode; not counted |
+
+**An intentional attempt the user abandons is not a false activation.** Someone
+who begins to act, thinks better of it, and relaxes has exercised intent
+correctly. Counting that against the device inflates the rate and — worse —
+makes the number track the *user's decision-making* rather than the hardware's,
+which is the opposite of what a device measurement should do.
+
+Where the two channels disagree, split on a stated, documented parameter rather
+than on judgement. For a held activation the defensible one is **duration held
+before release**: a brief episode reads as abandonment, a sustained one near the
+calibrated maximum reads as a misfire. Whatever the split point, **report the
+ambiguous count alongside the rate**, so a reader can see how much of the number
+was decided by the parameter instead of by the signal.
+
+This is the same discrimination `DwellEngine` already makes — activation / undo /
+abandoned attempt — and the engine got it wrong first: `_resolveDeparture()`
+initially counted a signal sweeping across a target as an abandoned attempt,
+which skewed the very timings it existed to tune. `ABANDON_FLOOR` was the fix.
+The lesson generalises: **the ambiguous middle must be its own category, or it
+silently contaminates both sides of the ratio.**
+
 ---
 
 ## 3. The procedure

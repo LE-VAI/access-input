@@ -692,9 +692,35 @@ export class ExternalSource extends InputSource {
   async start() { this._active = true; }
   stop() { this._active = false; }
 
-  focus(targetId) { if (this._active) this.onFocus?.(targetId, this._now()); }
-  select(targetId) { if (this._active) this.onSelect?.(targetId, this._now()); }
-  cancel(reason = 'external') { if (this._active) this.onCancel?.(reason, this._now()); }
+  /**
+   * Report the position the external system is pointing at.
+   *
+   * THE tMs PARAMETER IS LOAD-BEARING AND WAS MISSING. This method previously
+   * accepted only `targetId` and always stamped the event with its own clock,
+   * so a host driving a virtual clock (the documented pattern for
+   * determinism) could not say what time it was. The bridge then handed the
+   * engine a wall-clock timestamp while the host ticked `dwell.hold()` on a
+   * virtual one — two timebases, which the engine's contract forbids. Because
+   * the wall clock grows with process age, the resulting failure was
+   * load-dependent and looked random.
+   *
+   * Passing `tMs` is now the way a virtual-clock host states the time. Omitting
+   * it keeps the old behaviour — stamp with this source's clock — which is
+   * correct for a host that uses one real clock throughout.
+   *
+   * @param {string} targetId
+   * @param {number} [tMs] the time of this event, in the caller's timebase
+   */
+  focus(targetId, tMs) { if (this._active) this.onFocus?.(targetId, Number.isFinite(tMs) ? tMs : this._now()); }
+
+  /**
+   * Report a discrete selection. `tMs` as in focus() — see the note there for
+   * why an omitted timestamp is a real hazard for a virtual-clock host.
+   */
+  select(targetId, tMs) { if (this._active) this.onSelect?.(targetId, Number.isFinite(tMs) ? tMs : this._now()); }
+
+  /** Report an external cancellation. `tMs` as in focus(). */
+  cancel(reason = 'external', tMs) { if (this._active) this.onCancel?.(reason, Number.isFinite(tMs) ? tMs : this._now()); }
 }
 
 /**
@@ -771,6 +797,39 @@ export class SignalBridge {
     this.onBlocked = options.onBlocked || null;
     this.onConsentLost = options.onConsentLost || null;
     this._stopSourceOnConsentLoss = options.stopSourceOnConsentLoss;
+
+    /**
+     * THE CLOCK THAT DRIVES THE ENGINE.
+     *
+     * DwellEngine's contract is that every timestamp it receives comes from ONE
+     * timebase; its header spells out the failure when they don't ("mixing a
+     * device's own clock into enter() while ticking hold() with the host's
+     * clock will look like a stall").
+     *
+     * WHERE THIS WENT WRONG, THREE TIMES, IN ORDER:
+     *
+     *   1. The bridge forwarded the SOURCE's timestamp into `dwell.enter()`.
+     *      A source on `performance.now()` plus a host ticking a test clock
+     *      gave the engine two timebases, and a source stamp ahead of the
+     *      host's clock makes `elapsed` negative so the dwell never completes.
+     *   2. Stamping `_now()` unconditionally was worse: it DISCARDED a
+     *      timestamp the caller had explicitly supplied (`src.focus('w3', 0)`
+     *      became "enter at performance.now()"), which is a different way of
+     *      putting the engine on the wrong clock.
+     *
+     * The rule that actually holds: THE CALLER'S TIMESTAMP IS AUTHORITATIVE.
+     * A source that was handed a time stamps with that time — an
+     * ExternalSource's `focus(id, tMs)` exists precisely so a host driving a
+     * virtual clock can state the time. `options.now` is only the FALLBACK for
+     * events that arrive WITHOUT one, and defaults to the source's own clock,
+     * which is what a real device's event timestamp is.
+     */
+    this._now = options.now || (options.source && typeof options.source._now === 'function'
+      ? options.source._now
+      : (() => performance.now()));
+
+    /** The engine's timebase for an event: the caller's time, else our fallback. */
+    this._timebase = (tMs) => (Number.isFinite(tMs) ? tMs : this._now());
 
     this._lastFocused = null;
     this._dwellUsed = false;
@@ -883,9 +942,11 @@ export class SignalBridge {
       // Only a continuous source has a position to dwell on. A direct source
       // that also reports focus (e.g. an external device naming its target)
       // gets no dwell: its select IS the choice.
+      //
+      // The caller's timestamp is authoritative — see _timebase().
       if (continuous && !direct) {
-        if (id === null) this.dwell.leave(tMs);
-        else this.dwell.enter(id, tMs);
+        if (id === null) this.dwell.leave(this._timebase(tMs));
+        else this.dwell.enter(id, this._timebase(tMs));
       }
     };
 
