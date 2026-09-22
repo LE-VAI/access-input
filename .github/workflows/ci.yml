@@ -72,10 +72,20 @@ jobs:
         # job makes that class impossible to ship.
         run: python3 scripts/audit-exports.py
 
-      - name: The type definitions compile and catch misuse
+      - name: The shipped types compile and catch misuse
         run: |
-          npm install --no-save typescript@5
-          cat > /tmp/consumer.ts <<'TS'
+          # TypeScript goes in the CONSUMER directory, not the repo. The first
+          # version installed it in the repo and then ran `npx tsc` from /tmp,
+          # where nothing was installed — npx refused and the job failed for
+          # five days. A check that fails for its own reasons is worse than no
+          # check: it trains you to ignore red.
+          rm -rf /tmp/pkgtest && mkdir -p /tmp/pkgtest && cd /tmp/pkgtest
+          npm init -y >/dev/null
+          npm install typescript@5 --silent
+          npm install "$GITHUB_WORKSPACE" --silent
+
+          # POSITIVE: correct usage against the published surface must compile.
+          cat > consumer.ts <<'TS'
           import { DwellEngine, SignalBridge, ExternalSource, ActivationDetector,
                    type ConsentGate, type CalibrationResult } from 'access-input';
           const gate: ConsentGate = { isGranted: () => true };
@@ -85,11 +95,24 @@ jobs:
           const r: CalibrationResult = new ActivationDetector().calibrate(1, 0.1, 10);
           void r;
           TS
-          mkdir -p /tmp/tstest && cd /tmp/tstest
-          npm init -y >/dev/null
-          npm install "$GITHUB_WORKSPACE" --silent
-          cp /tmp/consumer.ts .
-          npx tsc --noEmit --strict --target es2022 --module esnext             --moduleResolution bundler consumer.ts
+          ./node_modules/.bin/tsc --noEmit --strict --target es2022             --module esnext --moduleResolution bundler consumer.ts
+
+          # NEGATIVE: the types must REJECT misuse. Types that only permit
+          # correct code are decoration — they document intent without
+          # enforcing it, and an integrator gets no protection from them.
+          cat > misuse.ts <<'TS'
+          import { DwellEngine } from 'access-input';
+          new DwellEngine({ dwellMs: 'fast' });      // wrong type
+          new DwellEngine({ dwelllMs: 600 });        // typo'd option
+          const d = new DwellEngine();
+          d.enter('w1');                             // missing argument
+          TS
+          if ./node_modules/.bin/tsc --noEmit --strict --target es2022                --module esnext --moduleResolution bundler misuse.ts 2>/dev/null; then
+            echo "FAIL: misuse compiled — the types do not enforce the API"
+            exit 1
+          fi
+          echo "ok: correct usage compiles, misuse is rejected"
+
 
   demo:
     name: Demo loads
