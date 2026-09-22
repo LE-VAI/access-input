@@ -1,6 +1,6 @@
 {
   "name": "access-input",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Input-abstraction substrate for assistive access: dwell activation, switch scanning, gaze/EMG/EEG-agnostic sources, and a read-along adapter. Zero dependencies.",
   "type": "module",
   "main": "src/index.js",
@@ -19,6 +19,7 @@
   },
   "files": [
     "src",
+    "docs/MEASUREMENT-PROTOCOL.md",
     "README.md",
     "LICENSE"
   ],

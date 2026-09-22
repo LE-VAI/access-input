@@ -28,13 +28,34 @@ import json
 import pathlib
 import sys
 
-# Conventionally fetched rather than imported — never a defect.
+# Conventionally fetched rather than imported — never a defect. Documentation
+# is read by a person, not resolved by a bundler, so shipping it under `files`
+# without an `exports` entry is correct rather than a gap. The earlier version
+# of this list omitted docs/, which made every documentation file ship as a
+# "SHIPPED BUT UNREACHABLE" failure and would have trained a reader to ignore
+# the one report that matters.
 EXPECTED_UNREACHABLE = {"LICENSE", "README.md", "package.json"}
+EXPECTED_PREFIXES = ("docs/",)
 
 # Internal modules are legitimately unreachable: nothing should import them
 # directly, and exposing them would freeze implementation details as API.
+#
+# THIS LIST WAS HARDCODED FROM ANOTHER PACKAGE'S FILENAMES, which made the
+# script silently wrong in any repo it was copied into — it would classify a
+# real gap as "internal by design" and exit 0. Worse, here it names dwell.js,
+# sources.js and analog.js, which THIS package does export: it is only harmless
+# because the reachability check runs first. Anything not in the package's own
+# exports belongs in the report, so the default is False and a name is added
+# here only with a reason.
+#
+# Nothing is internal in this package today: every src/ module is either
+# exported or reachable through the main entry. Keep it that way unless there
+# is a specific module you intend to keep private.
+INTERNAL = set()
+
+
 def is_internal(path: str) -> bool:
-    return path.startswith("src/engines/") or path.endswith(("tokenizer.js", "highlight.js", "timings.js", "dwell.js", "sources.js", "words.js", "analog.js", "transports.js"))
+    return path in INTERNAL
 
 
 def unprefix(value: str) -> str:
@@ -77,7 +98,7 @@ def main() -> int:
     for f in sorted(shipped):
         if f in reachable:
             continue
-        if f in EXPECTED_UNREACHABLE:
+        if f in EXPECTED_UNREACHABLE or f.startswith(EXPECTED_PREFIXES):
             expected.append(f)
         elif is_internal(f):
             internal.append(f)

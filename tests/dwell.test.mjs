@@ -418,17 +418,146 @@ test('repeated abandonments shorten the dwell (too-long signal)', () => {
 });
 
 test('repeated undos lengthen the dwell (too-short signal)', () => {
-  const { engine, events } = harness({ dwellMs: 500, adaptive: true, lockOnMs: 0 });
+  const { engine, events } = harness({ dwellMs: 500, adaptive: true, lockOnMs: 0, graceMs: 10 });
+  // NOTE: this test previously called hold(t + 600) — a single 600ms jump,
+  // which correctly trips the clock-gap guard, so NO activation ever fired.
+  // It still passed, because the old adaptation divided by
+  // Math.max(1, _activations): the denominator was fabricated and the undo
+  // rate came out as 3.0 from zero completed dwells. It was asserting
+  // arithmetic, not behaviour. advance() ticks at frame cadence the way a
+  // real host does, so the engine sees the dwells it is being asked about.
+  //
+  // A FRESH target id per attempt, because leave-to-rearm correctly refuses to
+  // restart a target that has already fired until the signal has departed it
+  // AND the grace window has closed. Re-entering the same id would test the
+  // repeat gate, not the adaptation.
   for (let i = 0; i < 4; i++) {
     const t = i * 1000;
-    engine.enter('a', t);
-    engine.hold(t + 600); // completes
+    engine.enter(`w${i}`, t);
+    advance(engine, t, t + 600); // completes a 500ms dwell
+    engine.leave(t + 600);
+    engine.tick(t + 700);
   }
+  assert.equal(engine.stats.totalActivations, 4,
+    'the dwells must actually have fired — otherwise this asserts nothing');
   engine.reportUndo();
   engine.reportUndo();
   engine.reportUndo();
   assert.ok(events.adapts.length >= 1, 'undos should trigger adaptation');
   assert.ok(events.adapts[0].ms > 500, 'dwell should get longer');
+  assert.equal(events.adapts[0].reason, 'undos', 'and it says why it moved');
+});
+
+test('a zero-activation record cannot produce an undo rate', () => {
+  // The specific arithmetic that let the test above pass on nothing: with no
+  // completed dwells there is no denominator, so an undo rate is not a
+  // measurable quantity. The engine must decline to adapt rather than divide
+  // by a stand-in.
+  const { engine, events } = harness({ dwellMs: 500, adaptive: true, lockOnMs: 0 });
+  for (let i = 0; i < 6; i++) engine.reportUndo();
+  assert.equal(events.adapts.length, 0,
+    'undos with no activations to undo must not move the duration');
+  assert.equal(engine.dwellMs, 500);
+});
+
+test('adaptation uses a WINDOW, so it does not go deaf over a long session', () => {
+  // The v1 denominator was a session total that only grew, so the undo ratio
+  // needed progressively more undos to cross its threshold. After 40 clean
+  // activations a 15% undo rate required 7 undos, then 8, then 9 — the engine
+  // adapted eagerly in the first minute and progressively stopped. A person
+  // whose tremor developed twenty minutes in got the least help, which is
+  // exactly backwards.
+  //
+  // The invariant the window buys: THE BURST NEEDED TO TRIGGER A CORRECTION IS
+  // BOUNDED, and does not depend on how long the session has already run.
+  const { engine, events } = harness({ dwellMs: 500, adaptive: true, lockOnMs: 0, graceMs: 10 });
+  let t = 0;
+  const completedDwells = (n, undos = 0) => {
+    for (let i = 0; i < n; i++) {
+      engine.enter(`w${t}`, t);
+      advance(engine, t, t + 600);
+      engine.leave(t + 600);
+      engine.tick(t + 700);
+      t += 1000;
+    }
+    for (let k = 0; k < undos; k++) engine.reportUndo();
+  };
+
+  // A long clean stretch first: 40 completed dwells, no complaints.
+  for (let k = 0; k < 10; k++) completedDwells(4);
+  const before = engine.dwellMs;
+  assert.equal(engine.stats.totalActivations, 40, 'the session really did run');
+  assert.equal(events.adapts.length, 0, 'no complaints, no correction');
+
+  // Now the tremor starts. Four undos is the same bounded burst that would
+  // trigger a correction in a fresh session. Under the v1 session-total
+  // denominator these 4 undos against 44 activations read as 0.09 and
+  // adaptation would never have fired at all.
+  completedDwells(4, 4);
+  assert.ok(events.adapts.length >= 1,
+    'a bounded burst of undos must still be heard after a long clean session');
+  assert.ok(engine.dwellMs > before, `expected lengthening, got ${engine.dwellMs}`);
+  assert.equal(events.adapts[events.adapts.length - 1].reason, 'undos');
+
+  // And the window is genuinely bounded rather than merely large: the history
+  // that a decision is made from cannot exceed ADAPT_WINDOW outcomes.
+  assert.ok(engine.stats.windowSize <= 20,
+    `the evidence window must stay bounded, got ${engine.stats.windowSize}`);
+});
+
+test('the same burst triggers the same correction in a fresh session', () => {
+  // The other half of the invariant: if the burst needed depended on session
+  // length, this and the test above would disagree. Both must adapt.
+  const { engine, events } = harness({ dwellMs: 500, adaptive: true, lockOnMs: 0, graceMs: 10 });
+  let t = 0;
+  for (let i = 0; i < 4; i++) {
+    engine.enter(`w${t}`, t);
+    advance(engine, t, t + 600);
+    engine.leave(t + 600);
+    engine.tick(t + 700);
+    t += 1000;
+  }
+  for (let k = 0; k < 4; k++) engine.reportUndo();
+  assert.ok(events.adapts.length >= 1, 'a fresh session adapts on the same burst');
+  assert.equal(events.adapts[events.adapts.length - 1].reason, 'undos');
+});
+
+test('a direction reversal is damped, so the corrections do not ring', () => {
+  // Undos push the duration up; a longer duration produces abandonments;
+  // abandonments push it down; a shorter duration produces undos again.
+  // v1 remembered nothing about which way it had just moved, so the two
+  // complaints could see-saw indefinitely. A reversal now takes a smaller
+  // step, so the pair of corrections converges instead of oscillating.
+  const { engine, events } = harness({ dwellMs: 600, adaptive: true, lockOnMs: 0, graceMs: 10 });
+  let t = 0;
+  const lengthen = () => {
+    for (let i = 0; i < 3; i++) {
+      engine.enter(`a${t}`, t); advance(engine, t, t + 900);
+      engine.leave(t + 900); engine.tick(t + 1000); t += 1200;
+    }
+    engine.reportUndo(); engine.reportUndo(); engine.reportUndo();
+  };
+  const shorten = () => {
+    for (let i = 0; i < 4; i++) {
+      engine.enter(`b${t}`, t); advance(engine, t, t + 400);
+      engine.leave(t + 400); engine.tick(t + 500); t += 800;
+    }
+  };
+
+  lengthen();
+  const afterFirst = engine.dwellMs;
+  assert.ok(afterFirst > 600, 'the first correction lengthens');
+  const firstStep = afterFirst / 600;
+
+  shorten();
+  const afterReversal = engine.dwellMs;
+  assert.ok(afterReversal < afterFirst, 'the reversal shortens');
+  const reversalStep = afterReversal / afterFirst;
+
+  assert.ok(reversalStep < firstStep,
+    `a reversal must take a smaller step than the move it reverses ` +
+    `(first ${firstStep.toFixed(3)}, reversal ${reversalStep.toFixed(3)})`);
+  assert.equal(events.adapts[events.adapts.length - 1].reason, 'abandons');
 });
 
 test('adaptation respects the floor and ceiling', () => {
@@ -546,6 +675,72 @@ test('setDwell: resets counters so old history cannot skew the new value', () =>
   engine.reportUndo();
   engine.setDwell(900);
   assert.equal(engine.stats.undos, 0, 'counters cleared by the choice');
+});
+
+test('CRITICAL: setDwell must NOT re-arm a target that already fired', () => {
+  // setDwell() called reset(), which clears `_spent`. So a user who opened
+  // the settings panel mid-dwell and nudged the slider cleared every spent
+  // target: a target awaiting departure became immediately re-armable while
+  // the signal had never left it. Worse, the engine's own phase stayed
+  // 'spent', so isSpent() and phase disagreed about the same fact — and the
+  // host reads isSpent() to decide whether to re-arm its indicator.
+  const { engine, events } = harness({ dwellMs: 600, lockOnMs: 0, adaptive: true });
+  engine.enter('vol', 0);
+  advance(engine, 0, 700);
+  assert.equal(engine.stats.totalActivations, 1, 'it fired');
+  assert.equal(engine.isSpent('vol'), true, 'and is spent, awaiting departure');
+  assert.equal(engine.phase, 'spent');
+
+  engine.setDwell(800);
+
+  assert.equal(engine.isSpent('vol'), true,
+    'the explicit choice must not re-arm a spent target');
+  assert.equal(engine.phase, 'spent', 'and the engine still agrees with itself');
+
+  // Continuing to hold must not produce a second activation.
+  advance(engine, 700, 1600);
+  assert.equal(engine.stats.totalActivations, 1,
+    'one landing must still mean one activation, settings panel or not');
+});
+
+test('CRITICAL: setDwell must NOT clear the lockout history', () => {
+  // `_lastFireAt` is the reaction-time lockout — the gate that stops a jittery
+  // signal reporting leave/enter in quick succession from double-firing. It is
+  // a safety gate, not adaptation bookkeeping, so reconfiguration has no
+  // business erasing it.
+  const { engine } = harness({ dwellMs: 400, lockOnMs: 0, lockoutMs: 200 });
+  engine.enter('a', 0);
+  advance(engine, 0, 500);
+  assert.equal(engine.stats.totalActivations, 1);
+
+  engine.setDwell(400); // a no-op change, but a change
+  engine.leave(600);
+  engine.tick(700);      // departure re-arms
+
+  // Re-enter 50ms after the last fire — inside the 200ms lockout.
+  engine.enter('a', 550);
+  advance(engine, 550, 1200);
+  assert.equal(engine.stats.totalActivations, 1,
+    'the lockout must survive a dwell change');
+});
+
+test('setDwell still leaves the engine usable afterwards', () => {
+  // The fix must not over-correct into "setDwell freezes repeat forever":
+  // a genuine departure after the change must still re-arm.
+  const { engine } = harness({ dwellMs: 600, lockOnMs: 0, adaptive: true, graceMs: 10 });
+  engine.enter('a', 0);
+  advance(engine, 0, 700);
+  assert.equal(engine.isSpent('a'), true);
+
+  engine.setDwell(800);
+  engine.leave(800);
+  engine.tick(900); // grace expires -> departure -> re-arm
+  assert.equal(engine.isSpent('a'), false,
+    'a real departure after the change must still re-arm the target');
+
+  engine.enter('a', 1000);
+  advance(engine, 1000, 1900);
+  assert.equal(engine.stats.totalActivations, 2, 'and it fires again');
 });
 
 test('setDwell: rejects nonsense input rather than corrupting the engine', () => {

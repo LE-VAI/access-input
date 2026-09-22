@@ -53,7 +53,9 @@ For someone using a switch, a gaze tracker, or an EMG channel, "click" does not 
 
 The corrections are deliberately asymmetric: lengthening is applied harder (a wrong activation is more damaging than a slow one), and shortening needs more evidence (abandonment can just mean the user changed their mind). The engine never infers intent from raw signal noise — it counts outcomes the host labels.
 
-Two details that make it usable rather than merely correct:
+**Adaptation reads a moving window, not a session total.** Ratios come from the last 20 labelled outcomes, so the burst needed to trigger a correction is bounded and does not depend on how long the session has already run. An earlier version divided by cumulative activations, which made the engine adapt eagerly in the first minute and then progressively stop — someone whose tremor developed twenty minutes in got the least help. The engine also remembers which way it last moved: reversing a correction takes a *smaller* step than the move it reverses, so the undo/abandon pair converges instead of see-sawing.
+
+Three details that make it usable rather than merely correct:
 
 - **Grace window.** A brief slip off-target (gaze jitter, a tremor, one dropped EMG frame) does not restart the dwell — progress resumes. Restarting on every slip makes an interface punishing.
 - **Sweep rejection.** A signal merely passing across a target is normal for gaze and is not counted as a failed attempt, so it cannot skew the adaptation.
@@ -190,20 +192,27 @@ The code distinguishes them, and so does this README:
 
 | Constant | Value | Basis |
 |---|---|---|
-| Onset criterion | amplitude above baseline | Collins 2020 (n=60) |
+| Onset criterion | amplitude above baseline | Collins 2020 (n=60) — an **electrophysiology** reference, cited only for the 2σ onset method it used, not for anything about assistive technology |
 | Baseline multiplier | 3σ | Collins used 2σ; raised deliberately, because a false activation costs more than a miss here |
 | Envelope cutoff | 5 Hz | conventional linear-envelope band is 5–10 Hz |
 | Raw EMG band-pass | 20–450 Hz | SENIAM; Noraxon puts the high cut at 400–500 Hz |
 | Spike conditioning | TKEO optional | Solnik 2010: onset error 13 ms vs 98 ms |
 | Adaptive threshold | dual-threshold with slow creep | OpenBCI's model; the implementable state of the art |
+| Per-trial false-positive measurement | accuracy / precision / recall / FPR = FP/(FP+TN) | SITbench 1.0 (Esiyok & Albayrak 2019) — note the correction notice, PMC6900938 |
 | **Min activation 150 ms** | **judgement** | No AT-specific published value exists. The 50 ms figure that looks like a candidate is a clinical *burst-duration* floor, and healthy controls routinely breach it — so 150 ms is deliberately well above it. |
 | **Release 100 ms, refractory 300 ms** | **judgement** | Same; expose and tune per user. |
 
 All of them live in an exported `ANALOG_DEFAULTS` object so a clinician can tune without forking.
 
+**A naming trap worth recording**, because it will bite anyone citing this field: *SITbench* is the benchmark that defines the accuracy/precision/recall/FPR metrics. *SAM* is the **Switch Access Measure** (Nguyen et al. 2023) — a 16-item video-rated functional assessment for children, unrelated to those metrics. They are not two names for one thing. The nearest thing to a published *error-rate standard* is Koester's scanning rule of thumb (revise when scan errors exceed 25% of correct selections) — a ratio, not a rate over time.
+
 ### What this is not
 
 Not a medical device. Not for diagnosis, therapy, or any application where a missed or spurious activation could cause harm. It reads **muscle electrical activity or air pressure** — an indirect, noisy proxy for intent — and it is not a brain interface, so do not call it one. Both false activations and missed activations will occur; that is the nature of the signal, not a defect to be hidden. A switch assessment led by an occupational therapist or AAC clinician is the correct process, and this library is not a substitute for it.
+
+**And no published number can tell you how often it will misfire for a given person.** There is no standardised per-hour false-activation benchmark for switch access anywhere in the literature — not for single switches, sip-and-puff, EMG, head pointers, or eye gaze — and no cross-method comparable rate. Individual studies report per-trial error rates and throughput; nobody has published a reusable per-hour figure. That is why the defaults above are labelled engineering values rather than clinical ones: the honest position is that the number does not exist yet.
+
+So `docs/MEASUREMENT-PROTOCOL.md` describes how to *produce* it for one person, on one device, on one day — a protocol you or a clinician can run, with the metrics and the reporting format specified, and no recruitment required to start.
 
 ## Consent gating (optional)
 
@@ -290,10 +299,16 @@ new DwellEngine({
   .reportUndo()           // host: the user undid the last activation
   .isSpent(id)            // has this target fired and not yet been re-armed?
   .phase                  // 'idle' | 'lockon' | 'dwell' | 'spent'
-  .stats                  // { dwellMs, lockOnMs, activations, undos, abandons, spent }
+  .stats                  // { dwellMs, lockOnMs, activations, undos, abandons,
+                          //   totalActivations, totalUndos, totalAbandons,
+                          //   adaptations, lastDirection, windowSize, spent }
 ```
 
-**Use `setDwell()` for user-facing controls, not a bare assignment.** An explicit choice re-centres the adaptive bounds around the chosen value (half to double) and resets the adaptation counters, so the user's number is treated as a decision rather than a starting guess. WCAG 2.2.1 requires a timing value be adjustable over at least ten times the default — and that the adjustment actually hold.
+**Use `setDwell()` for user-facing controls, not a bare assignment.** An explicit choice re-centres the adaptive bounds around the chosen value (half to double) and clears the adaptation window, so the user's number is treated as a decision rather than a starting guess. WCAG 2.2.1 requires a timing value be adjustable over at least ten times the default — and that the adjustment actually hold.
+
+What `setDwell()` deliberately does **not** touch is repeat gating: `_spent` and the lockout history survive a settings change. An earlier version called `reset()` here, so a user who opened the settings panel mid-dwell and nudged the slider re-armed a target that had already fired while the signal never left it — and `isSpent()` then disagreed with `phase` about the same fact, which is the kind of contradiction a host cannot defend against.
+
+`stats` reports the windowed counts the engine actually acts on, with `total*` for the session. Reporting only totals would describe a different quantity than the one driving behaviour.
 
 Time is always supplied by the caller (`performance.now()` in a browser, an injected clock in tests) — the engine never reads a clock itself, so its behaviour is fully deterministic.
 

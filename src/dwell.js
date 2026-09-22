@@ -75,8 +75,52 @@ const PROGRESS_INTERVAL_MS = 50;
  */
 const ABANDON_FLOOR = 0.25;
 
-/** Hysteresis: never re-adapt within this many events of the last change. */
+/**
+ * ADAPTATION USES A WINDOW, NOT A SESSION TOTAL.
+ *
+ * The first version divided cumulative counts: `_undos / _activations`, with
+ * `_activations` never reset by an adaptation. Two failures followed.
+ *
+ *   1. Responsiveness decayed monotonically. `_activations` only grows, so
+ *      after 40 fires the undo ratio needed 7 undos to cross 0.15, then 8,
+ *      then 9 — the engine adapted eagerly in the first minute of a session
+ *      and progressively stopped adapting thereafter. The person whose tremor
+ *      developed twenty minutes in got the least help.
+ *   2. The two corrections could ring. Undos push the duration up; a longer
+ *      duration produces abandonments; abandonments push it down; a shorter
+ *      duration produces undos. Nothing recorded which way the engine had just
+ *      moved, so it could see-saw between the two complaints forever.
+ *
+ * The fix is an outcome window plus direction memory: ratios are computed over
+ * the last ADAPT_WINDOW outcomes, and reversing a previous correction requires
+ * a FULL window of evidence and moves in a smaller step, so a reversal
+ * converges rather than ringing.
+ */
+const ADAPT_WINDOW = 20;
+
+/**
+ * Never re-adapt within this many outcomes of the last correction. Preserved
+ * from v1: without it a rapid burst of undos would take the duration straight
+ * to the ceiling in a few activations, which is its own kind of wrong.
+ */
 const ADAPT_COOLDOWN_EVENTS = 3;
+
+/** Undo rate above which the dwell is too short. (Unchanged from v1.) */
+const UNDO_RATE = 0.15;
+
+/** Abandon rate above which the dwell is too long, once past 2 abandons. */
+const ABANDON_RATE = 0.4;
+
+const STEP_UP = 1.15;
+const STEP_DOWN = 0.9;
+
+/**
+ * Smaller steps when the engine reverses its own last correction. A reversal
+ * is the engine admitting it moved the wrong way; taking another full-size
+ * step in the opposite direction is how a controller oscillates.
+ */
+const REVERSAL_STEP_UP = 1.05;
+const REVERSAL_STEP_DOWN = 0.97;
 
 /**
  * Adaptive dwell bounds. The evidence base (Burnham 2025 systematic review +
@@ -152,10 +196,23 @@ export class DwellEngine {
     this._repeatTargets = new Set();
     this._repeatIntervals = new Map(); // id -> intervalMs override
 
-    // Adaptation bookkeeping
+    // Adaptation bookkeeping.
+    //
+    // `_outcomes` is a rolling window of the last ADAPT_WINDOW labelled
+    // results, so a ratio reflects the recent signal rather than a session
+    // total that makes the engine progressively deaf. `_lastDirection` records
+    // which way the engine last moved the duration, so a reversal can be
+    // damped instead of ringing. See the ADAPT_WINDOW comment.
+    //
+    // The session totals below are kept for diagnostics only — nothing in the
+    // adaptation reads them, because they are the quantity whose use caused
+    // the decay.
     this._activations = 0;
     this._undos = 0;
     this._abandons = 0;
+    this._outcomes = [];
+    this._lastDirection = 0;   // +1 lengthened, -1 shortened, 0 never adapted
+    this._adaptations = 0;     // total corrections applied — for diagnostics
     this._eventsSinceAdapt = 0;
   }
 
@@ -174,16 +231,54 @@ export class DwellEngine {
     return Math.min(1, this._accumulatedMs / this.dwellMs);
   }
 
-  /** Adaptation counters, for diagnostics or a settings screen. */
+  /**
+   * Adaptation counters, for diagnostics or a settings screen.
+   *
+   * The rates are reported over the ADAPTIVE WINDOW, because that is what the
+   * engine actually acts on. Reporting session totals would describe a
+   * different quantity than the one driving the behaviour — an instrument that
+   * misreports what it measures, which is worse than reporting nothing.
+   */
   get stats() {
+    const w = this._windowCounts();
     return {
       dwellMs: Math.round(this.dwellMs),
       lockOnMs: Math.round(this.lockOnMs),
-      activations: this._activations,
-      undos: this._undos,
-      abandons: this._abandons,
+      activations: w.activation,
+      undos: w.undo,
+      abandons: w.abandon,
+      // Session totals, separately labelled so they cannot be confused with
+      // the windowed figures above.
+      totalActivations: this._activations,
+      totalUndos: this._undos,
+      totalAbandons: this._abandons,
+      adaptations: this._adaptations,
+      lastDirection: this._lastDirection,
+      windowSize: this._outcomes.length,
       spent: this._spent.size,
     };
+  }
+
+  /** Counts of each outcome type inside the current adaptive window. */
+  _windowCounts() {
+    const counts = { activation: 0, undo: 0, abandon: 0 };
+    for (const o of this._outcomes) counts[o]++;
+    return counts;
+  }
+
+  /**
+   * Record a labelled outcome, keeping the window bounded.
+   *
+   * `undo` is recorded IN ADDITION to the activation it followed — the user
+   * completed a dwell and then reversed it, which is one activation and one
+   * complaint about timing, not one or the other.
+   */
+  _recordOutcome(kind) {
+    this._outcomes.push(kind);
+    if (this._outcomes.length > ADAPT_WINDOW) {
+      this._outcomes.splice(0, this._outcomes.length - ADAPT_WINDOW);
+    }
+    this._eventsSinceAdapt++;
   }
 
   /**
@@ -272,15 +367,28 @@ export class DwellEngine {
    * WCAG 2.2.1 (Timing Adjustable) requires that a user be able to adjust a
    * timing value "over a wide range that is at least ten times the length of
    * the default setting" — and that the adjustment actually take effect. So
-   * an explicit choice does two things beyond assigning the value:
+   * an explicit choice does three things beyond assigning the value:
    *
    *   1. It re-centres the ADAPTIVE bounds around the chosen value. Without
    *      this, a user who picks 1200ms while the ceiling is 1500ms has their
    *      choice slowly walked back by adaptation, and a user who picks 150ms
    *      is yanked up to the 300ms floor on the first correction. The user's
    *      number is a decision, not a starting guess.
-   *   2. It resets the adaptation counters, so history from before the change
+   *   2. It clears the adaptation WINDOW, so history from before the change
    *      does not immediately pull the new value somewhere else.
+   *   3. It clears the directional memory, so the first correction after the
+   *      change is not treated as a reversal of a decision the user just made.
+   *
+   * WHAT IT DELIBERATELY DOES NOT DO: touch the repeat-gating state. An
+   * earlier version called reset() here, which clears `_spent` and
+   * `_lastFireAt` — the two structures that stop one landing from producing a
+   * stream of activations. So a user who opened the settings panel mid-dwell
+   * and nudged the slider cleared `_spent` for every target, and a target that
+   * was spent (fired, awaiting departure) became immediately re-armable while
+   * the signal had never left it. The engine's own `phase` still said 'spent',
+   * so isSpent() and phase disagreed about the same fact — and the host, which
+   * reads isSpent(), would re-arm its indicator under a signal that was still
+   * resting on the target.
    *
    * @param {number} ms
    */
@@ -293,7 +401,13 @@ export class DwellEngine {
     // user by a large factor.
     this.minDwellMs = Math.max(50, Math.round(v * 0.5));
     this.maxDwellMs = Math.max(this.minDwellMs + 100, Math.round(v * 2));
-    this.reset();
+
+    // Adaptive history only. Repeat gating and in-flight dwell state survive —
+    // see the note above about why that separation matters.
+    this._outcomes = [];
+    this._lastDirection = 0;
+    this._adaptations = 0;
+    this._eventsSinceAdapt = 0;
   }
 
   /**
@@ -520,15 +634,18 @@ export class DwellEngine {
    */
   reportUndo() {
     this._undos++;
-    this._eventsSinceAdapt++;
+    this._recordOutcome('undo');
     this._adapt();
   }
 
-  /** Forget adaptation counters (new session, or after recalibration). */
+  /** Forget adaptation history (new session, or after recalibration). */
   reset() {
     this._activations = 0;
     this._undos = 0;
     this._abandons = 0;
+    this._outcomes = [];
+    this._lastDirection = 0;
+    this._adaptations = 0;
     this._eventsSinceAdapt = 0;
     this._spent.clear();
     this._lastFireAt.clear();
@@ -563,7 +680,7 @@ export class DwellEngine {
 
     this._lastFireAt.set(id, tMs);
     this._activations++;
-    this._eventsSinceAdapt++;
+    this._recordOutcome('activation');
 
     // After firing, the target STAYS current with phase 'spent'. This is the
     // crux of leave-to-rearm: clearing _target here would destroy the
@@ -617,7 +734,7 @@ export class DwellEngine {
     // merely sweeping across a target is normal and must not skew adaptation.
     if (ratio >= ABANDON_FLOOR) {
       this._abandons++;
-      this._eventsSinceAdapt++;
+      this._recordOutcome('abandon');
     }
     this.onPhase?.(null, null);
     this.onCancel?.(id, { reason, progress: ratio });
@@ -640,29 +757,54 @@ export class DwellEngine {
    *   - Shortening (abandonments) is applied gently and needs more evidence,
    *     because abandonment can also mean "the user changed their mind",
    *     which is not a complaint about timing.
+   *
+   * BOTH ARE COMPUTED OVER THE WINDOW, and the engine remembers which way it
+   * last moved. See the ADAPT_WINDOW comment for the two failures those two
+   * changes fix: a session-total denominator that made adaptation progressively
+   * deaf, and no direction memory, which let the corrections ring.
    */
   _adapt() {
     if (!this.adaptive) return;
     if (this._eventsSinceAdapt < ADAPT_COOLDOWN_EVENTS) return;
 
-    const before = this.dwellMs;
+    const w = this._windowCounts();
 
-    // Too short: the user is undoing what the engine fired.
-    if (this._undos > 0 && this._undos / Math.max(1, this._activations) > 0.15) {
-      this.dwellMs = Math.min(this.maxDwellMs, this.dwellMs * 1.15);
-    } else if (
-      // Too long: repeated abandoned attempts outnumber completions.
-      this._abandons > 2 &&
-      this._abandons / Math.max(1, this._abandons + this._activations) > 0.4
-    ) {
-      this.dwellMs = Math.max(this.minDwellMs, this.dwellMs * 0.9);
+    const before = this.dwellMs;
+    const undoRate = w.activation > 0 ? w.undo / w.activation : 0;
+    const abandonRate = w.abandon / Math.max(1, w.abandon + w.activation);
+
+    // Too short: the user is undoing what the engine fired. Takes precedence
+    // over the abandonment branch, matching v1 — a false activation is the
+    // more damaging error, so it is the one acted on when both are present.
+    if (w.undo > 0 && undoRate > UNDO_RATE) {
+      const step = this._lastDirection === -1 ? REVERSAL_STEP_UP : STEP_UP;
+      this.dwellMs = Math.min(this.maxDwellMs, this.dwellMs * step);
+      this._lastDirection = 1;
+    } else if (w.abandon > 2 && abandonRate > ABANDON_RATE) {
+      const step = this._lastDirection === 1 ? REVERSAL_STEP_DOWN : STEP_DOWN;
+      this.dwellMs = Math.max(this.minDwellMs, this.dwellMs * step);
+      this._lastDirection = -1;
+    } else {
+      // No correction warranted. Do NOT reset the window: the outcomes stay
+      // and the next call adds to them, so the evidence accumulates until a
+      // threshold is actually crossed. v1 reset the counters only when it
+      // moved, which was right for counters and would be wrong for a window.
+      return;
     }
 
     if (this.dwellMs !== before) {
+      // The window and its counters are consumed by the correction that used
+      // them; the next verdict has to be earned from outcomes observed since.
+      this._outcomes = [];
       this._eventsSinceAdapt = 0;
-      this._undos = 0;
-      this._abandons = 0;
-      this.onAdapt?.(Math.round(this.dwellMs), { from: Math.round(before) });
+      this._adaptations++;
+      this.onAdapt?.(Math.round(this.dwellMs), {
+        from: Math.round(before),
+        reason: this._lastDirection === 1 ? 'undos' : 'abandons',
+        undoRate: Math.round(undoRate * 100) / 100,
+        abandonRate: Math.round(abandonRate * 100) / 100,
+      });
     }
   }
 }
+

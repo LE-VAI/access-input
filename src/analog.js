@@ -25,7 +25,16 @@
  *
  *   EVIDENCED
  *     - onset is amplitude-above-baseline, conventionally 2 SD above baseline
- *       (Collins et al. 2020, n=60 — PMC7533965)
+ *       (Collins et al. 2020, n=60 — PMC7533965). NOTE ON THIS CITATION: it is
+ *       an ELECTROPHYSIOLOGY reference (minimum voluntary EMG burst duration in
+ *       healthy controls; Movement Disorders Clinical Practice 2020;7(7):
+ *       827-833) and it does not study assistive technology or report switch
+ *       accuracy. It is cited for two facts it DOES establish: its automated
+ *       marker method used the 2 SD-above-baseline onset criterion, and
+ *       sub-50 ms bursts are frequent in appendicular muscles. A later review
+ *       flagged it as a mis-citation because the paper never mentions AT —
+ *       true, and beside the point, since no AT claim is derived from it. Kept
+ *       deliberately: the 50 ms judgement below depends on it.
  *     - the linear envelope is a low-pass at 5-10 Hz; 5 Hz is conventional
  *     - raw EMG band-pass is 20-450 Hz (SENIAM; Noraxon puts the high cut at
  *       400-500 Hz)
@@ -33,6 +42,13 @@
  *       ~98 ms to ~13 ms (Solnik et al. 2010)
  *     - adaptive dual-threshold with slow creep is the implementable state of
  *       the art; OpenBCI's creep model is the reference parameterisation
+ *     - per-TRIAL false-positive measurement IS established and reusable:
+ *       SITbench 1.0 (Esiyok & Albayrak, J Healthcare Engineering
+ *       2019:5075163 — PMC6721442; correction notice PMC6900938) computes
+ *       accuracy, precision, recall and false-positive rate = FP/(FP+TN)
+ *       automatically per trial. What does NOT exist is a standardised
+ *       per-hour or per-session false-activation benchmark, or any
+ *       cross-method comparable rate. See docs/MEASUREMENT-PROTOCOL.md.
  *
  *   JUDGEMENT (labelled as such, exposed as tunables)
  *     - minimum activation 150 ms, release 100 ms, refractory 300 ms. No
@@ -42,7 +58,9 @@
  *       and leg muscles — so 50 ms would be actively unsafe as a threshold.
  *       These defaults sit well above it deliberately. They are engineering
  *       defaults, not validated clinical values, and a clinician should tune
- *       them per user.
+ *       them per user. docs/MEASUREMENT-PROTOCOL.md is how you measure what
+ *       they actually produce for a given user, since no published value can
+ *       answer that.
  *
  * ONE HARD RULE: the detector never lowers its thresholds into the noise
  * floor. OpenBCI documents the failure mode ("set Low Limit just above the
