@@ -1,5 +1,15 @@
 # access-input
 
+<!-- vai-hero:start -->
+<p align="center">
+  <picture>
+    <source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/hero-poster.png">
+    <img src="docs/assets/hero-loop.webp" width="800" alt="A six-tile grid driven by gaze. A 600 ms dwell ring fills to select Read, then More, then Yes; a brief glance at Help ends before the dwell completes and cancels. An event log records focus, select, and cancel as they happen.">
+  </picture>
+</p>
+<p align="center"><sub>A 4.8-second loop. It plays once and rests, and shows a still frame if you prefer reduced motion. <a href="https://le-vai.github.io/LE-VAI/loops/#access-input">Watch it on repeat</a>.</sub></p>
+<!-- vai-hero:end -->
+
 **The input-abstraction layer for assistive access.** Switch, gaze, EMG, head-pointer, keyboard — and one day EEG — all reduce to the same three events. This package is the seam between whatever signal a person can produce and whatever interface they need to drive.
 
 Zero dependencies. MIT. Runs in the browser, testable in Node.
