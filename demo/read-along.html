@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Access input × read-along — driving a reading surface by switch, gaze, or key</title>
-<!-- Latest published read-along. Move this pin (and the two in the script) to 0.3.0 once that release ships. -->
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@designesy/read-along@0.2.3/src/read-along.css">
+<!-- Latest published read-along (also pinned in the script). -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@designesy/read-along@0.3.0/src/read-along.css">
 <style>
   :root {
     --bg: #0b0c0f;
@@ -192,8 +192,8 @@ import { ReadAlongInputHost } from '../src/read-along.js';
 
 // Load read-along from the CDN so this demo runs as a static page with no
 // build step — the two libraries are independently published.
-// Latest published read-along. Move this pin to 0.3.0 once that release ships.
-const READ_ALONG = 'https://cdn.jsdelivr.net/npm/@designesy/read-along@0.2.3';
+// Latest published read-along.
+const READ_ALONG = 'https://cdn.jsdelivr.net/npm/@designesy/read-along@0.3.0';
 await import(`${READ_ALONG}/src/read-along.js`);
 
 const reader = document.getElementById('reader');
