@@ -12,6 +12,9 @@
     --text: #f5f5f7;
     --dim: #9a9aa5;
     --amber: #ffc400;
+    /* A dark page must SAY it is dark, or native controls (sliders,
+       checkboxes, focus rings) render for a light page on top of it. */
+    color-scheme: dark;
   }
   * { box-sizing: border-box; margin: 0; }
   body {
@@ -87,6 +90,12 @@
     font: 12px/1.6 ui-monospace, monospace; color: var(--dim);
     max-height: 130px; overflow-y: auto; white-space: pre-wrap;
   }
+  /* The log scrolls, so it takes focus (a keyboard user must be able to
+     scroll it), and the surfaces take focus so a keyboard or switch user has
+     somewhere to stand that is not a button. Both need a visible ring. */
+  .log:focus-visible, [data-surface]:focus-visible {
+    outline: 2px solid var(--amber); outline-offset: 4px; border-radius: 6px;
+  }
   .hint { font-size: 13.5px; color: var(--dim); margin-top: 10px; }
   kbd {
     font: 11px ui-monospace, monospace; background: #23262c;
@@ -103,9 +112,26 @@
     );
   }
   .cell[data-dwell-focus] { outline: 1px solid color-mix(in oklab, var(--amber) 55%, transparent); }
+
+  /* Page navigation + footer: landmarks a screen-reader user can jump to, and
+     a way between the demos that does not depend on the README. */
+  .demo-nav { display: flex; flex-wrap: wrap; gap: 4px 18px; margin-bottom: 28px;
+    font: 500 13px/1.4 ui-sans-serif, system-ui, sans-serif; }
+  .demo-nav a, .demo-footer a { color: inherit; text-underline-offset: 0.18em;
+    display: inline-flex; align-items: center; min-height: 24px; }
+  .demo-nav a[aria-current="page"] { font-weight: 700; text-decoration: none; }
+  .demo-nav a:focus-visible, .demo-footer a:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; border-radius: 2px; }
+  .demo-footer { margin-top: 36px; font: 13px/1.6 ui-sans-serif, system-ui, sans-serif; }
 </style>
 </head>
 <body>
+<nav class="demo-nav" aria-label="access-input demos">
+  <a href="index.html" aria-current="page">Dwell &amp; scan</a>
+  <a href="read-along.html">Read-along integration</a>
+  <a href="stack.html">Consent-gated stack</a>
+  <a href="analog.html">Biosignal pipeline</a>
+</nav>
+<main>
 <p class="eyebrow">Open source · MIT</p>
 <h1>Access input</h1>
 <p class="sub">The same interface, driven by whatever signal a person has.
@@ -128,7 +154,7 @@ The point is that nothing above this layer needs to know which one you used.</p>
     <label class="status">Leave-to-rearm <input id="rearm" type="checkbox" checked></label>
   </div>
   <div class="row">
-    <span class="status" id="stats">activations 0 · undos 0 · abandons 0 · dwell 700ms</span>
+    <span class="status" id="stats">activations 0 · undos 0 · abandons 0 · dwell 600ms</span>
     <button id="undo">Report undo</button>
     <button id="pause-btn" aria-pressed="false">Pause (kill switch)</button>
   </div>
@@ -136,13 +162,25 @@ The point is that nothing above this layer needs to know which one you used.</p>
 </div>
 
 <div class="panel">
-  <h2>Reading surface</h2>
-  <div class="readtext" id="reading">Reading while listening helps because the eye and the ear reinforce each other. The words stay visible while the voice moves through them.</div>
+  <h2>Feedback and calibration</h2>
+  <div class="row">
+    <button id="speak-btn" aria-pressed="false" aria-describedby="speak-note">Speak on focus</button>
+    <button id="remember-btn" aria-pressed="false" aria-describedby="remember-note">Remember dwell on this device</button>
+    <button id="reset-btn" aria-describedby="remember-note">Reset calibration</button>
+  </div>
+  <p class="hint" id="speak-note">Off until you turn it on. Reads each target aloud once it has focus: after lock-on when dwelling (a passing glance stays silent), on every step when scanning.</p>
+  <p class="hint" id="remember-note">Stores only the dwell duration, in this browser, and nothing is sent anywhere. Turning it off deletes it; Reset calibration deletes it and returns to 600ms.</p>
+  <p class="hint" id="feedback-status" role="status"></p>
 </div>
 
 <div class="panel">
-  <h2>Target grid — the same layer, any content</h2>
-  <div class="grid" id="grid">
+  <h2 id="reading-h">Reading surface</h2>
+  <div class="readtext" id="reading" data-surface tabindex="0" role="group" aria-labelledby="reading-h">Reading while listening helps because the eye and the ear reinforce each other. The words stay visible while the voice moves through them.</div>
+</div>
+
+<div class="panel">
+  <h2 id="grid-h">Target grid — the same layer, any content</h2>
+  <div class="grid" id="grid" data-surface tabindex="0" role="group" aria-labelledby="grid-h">
     <div class="cell" data-dwell-target="yes">Yes</div>
     <div class="cell" data-dwell-target="no">No</div>
     <div class="cell" data-dwell-target="more">More</div>
@@ -152,9 +190,16 @@ The point is that nothing above this layer needs to know which one you used.</p>
 </div>
 
 <div class="panel">
-  <h2>Event log</h2>
-  <div class="log" id="log"></div>
+  <h2 id="log-h">Event log</h2>
+  <div class="log" id="log" tabindex="0" role="region" aria-labelledby="log-h"></div>
 </div>
+</main>
+<footer class="demo-footer">
+  access-input · MIT licensed · zero dependencies ·
+  <a href="https://github.com/LE-VAI/access-input">Source on GitHub</a> ·
+  <a href="https://www.npmjs.com/package/access-input">npm</a>
+</footer>
+
 
 <script type="module">
 import { DwellEngine, SignalBridge, PointerSource, SwitchSource, KeyboardSource, tagWords }
@@ -169,6 +214,9 @@ const lockonRange = document.getElementById('lockon-range');
 const lockonVal = document.getElementById('lockon-val');
 const rearmBox = document.getElementById('rearm');
 const pauseBtn = document.getElementById('pause-btn');
+const speakBtn = document.getElementById('speak-btn');
+const rememberBtn = document.getElementById('remember-btn');
+const feedbackStatus = document.getElementById('feedback-status');
 
 const log = (msg) => {
   const t = new Date().toLocaleTimeString('en-US', { hour12: false });
@@ -176,6 +224,104 @@ const log = (msg) => {
 };
 
 let dwell = null, bridge = null, source = null, mode = 'pointer';
+
+/** The duration the engine is built with, and what Reset calibration returns to. */
+const DWELL_DEFAULT_MS = 600;
+/** The demo's storage key. Only used while "Remember dwell" is on. */
+const STORE_KEY = 'access-input-demo:dwell';
+// "Remember" survives a reload because the stored value does. Starting it off
+// every time meant a reload ignored the tuned dwell AND showed "not
+// remembering" while the value still sat in this browser, so the page's own
+// "nothing is stored" line was false.
+let remember = false;
+try { remember = localStorage.getItem(STORE_KEY) !== null; } catch { /* storage blocked: off */ }
+rememberBtn.setAttribute('aria-pressed', String(remember));
+let speakOn = false;
+
+/**
+ * KEY ROUTING. The switch and keyboard sources listen on `window`, the way a
+ * dedicated switch would. On a page that also has controls, that means a
+ * Space or Enter pressed ON a button would be taken as a switch press and the
+ * button would never activate — every control on the page, including the
+ * speech toggle, would stop being keyboard-operable the moment a scanning
+ * mode is on.
+ *
+ * So a key pressed on a control stays with that control — unless the pointer
+ * put focus there. A visitor who clicks a mode button and then presses Space
+ * means "switch", not "click that button again", and keeps the old behaviour.
+ * Tab always moves page focus: in keyboard mode it would otherwise mean "next
+ * target", and a keyboard user could never leave the surface (a keyboard
+ * trap). Escape always reaches the source, because backing out must work.
+ */
+const CONTROLS = 'button, input, select, textarea, a[href], [contenteditable]';
+const controlOf = (ev) => ev.composedPath?.()[0]?.closest?.(CONTROLS) ?? null;
+let pointerControl = null;
+window.addEventListener('pointerdown', (ev) => { pointerControl = controlOf(ev); }, true);
+window.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape') return;
+  if (ev.key === 'Tab') { pointerControl = null; ev.stopPropagation(); return; }
+  const control = controlOf(ev);
+  if (control && control !== pointerControl) ev.stopPropagation();
+}, true);
+
+/**
+ * SPEAK-ON-FOCUS. access-input never speaks; it says WHAT has focus and the
+ * page chooses the voice. This one is read-along's Web Speech engine, loaded
+ * from its CDN only when speech is switched on — so a visitor who never turns
+ * it on never fetches it. It brings the fixes a bare speechSynthesis call
+ * lacks (Chrome's long-utterance cutoff, voices that never report progress).
+ */
+// Latest published read-along. Move this pin to 0.3.0 once that release ships.
+const READ_ALONG = 'https://cdn.jsdelivr.net/npm/@designesy/read-along@0.2.3';
+let voice = null;
+let talking = false;
+
+async function loadVoice() {
+  if (voice) return voice;
+  const { WebSpeechEngine } = await import(`${READ_ALONG}/src/engines/webspeech.js`);
+  if (!WebSpeechEngine.available) throw new Error('this browser has no Web Speech support');
+  // The engine takes speechSynthesis.onvoiceschanged for itself. Chain onto
+  // whatever was there instead of silently replacing it.
+  const prior = speechSynthesis.onvoiceschanged;
+  voice = new WebSpeechEngine({
+    rate: 1.05,
+    onEnd: () => { talking = false; },
+    onMode: (m) => {
+      if (m === 'visual') log('speech: no voice answered — this browser may have none installed');
+    },
+  });
+  const own = speechSynthesis.onvoiceschanged;
+  if (prior && prior !== own) {
+    speechSynthesis.onvoiceschanged = (e) => { prior.call(speechSynthesis, e); own?.call(speechSynthesis, e); };
+  }
+  return voice;
+}
+
+/** Replace whatever is being said with `label`. */
+function say(label) {
+  if (!voice) return;
+  hush();
+  talking = true;
+  voice.speak([{ tokens: label.split(/\s+/).map((text, index) => ({ text, index })) }]);
+}
+
+/**
+ * Stop OUR speech only. Every Web Speech utterance shares one global queue,
+ * and stop() cancels all of it — so stopping when we are not talking would cut
+ * off speech this page did not start.
+ */
+function hush() {
+  if (voice && talking) voice.stop();
+  talking = false;
+}
+
+/** Put the dwell slider and its readout in step with the engine. */
+function syncDwellControl() {
+  const ms = Math.round(dwell.dwellMs);
+  const min = Number(dwellRange.min), max = Number(dwellRange.max);
+  dwellRange.value = String(Math.min(max, Math.max(min, ms)));
+  dwellVal.textContent = `${ms}ms`;
+}
 
 /**
  * Make every word in the reading surface addressable. Done ONCE, before any
@@ -227,8 +373,11 @@ function clearAllProgress(exceptId) {
 function flash(id) {
   const el = document.querySelector(`[data-dwell-target="${id}"]`);
   if (!el) return;
+  // 38%, the same strength as a full dwell fill: white text keeps 6:1 against
+  // it. The flash used to start at 55%, which dropped the word under 4:1 at
+  // the exact moment the user is checking what they chose.
   el.animate(
-    [{ background: 'color-mix(in oklab, var(--amber) 55%, transparent)' },
+    [{ background: 'color-mix(in oklab, var(--amber) 38%, transparent)' },
      { background: 'transparent' }],
     { duration: 420, easing: 'ease-out' }
   );
@@ -249,11 +398,24 @@ function rebuild() {
   source?.stop();
   document.body.removeAttribute('data-scanning');
 
+  const carried = Number(dwellRange.value);
   dwell = new DwellEngine({
-    dwellMs: Number(dwellRange.value),
+    dwellMs: DWELL_DEFAULT_MS,
+    // The adaptive bounds match the slider. A stored duration is clamped to
+    // these on load, so with the library defaults (300–1500ms) a user who
+    // chose 150ms on this slider would get 300ms back after a reload.
+    minDwellMs: Number(dwellRange.min),
+    maxDwellMs: Number(dwellRange.max),
     lockOnMs: Number(lockonRange.value),
     adaptive: adaptiveBox.checked,
     leaveToRearm: rearmBox.checked,
+    // Opt-in: without a key the engine never reads or writes storage.
+    persist: remember ? STORE_KEY : undefined,
+    onFocus: (id, label, { via }) => {
+      log(`FOCUS "${label}" (${via === 'dwell' ? 'lock-on passed' : 'scan step'})`);
+      if (speakOn) say(label);
+    },
+    onBlur: () => { if (speakOn) hush(); },
     onProgress: (id, r) => {
       const el = document.querySelector(`[data-dwell-target="${id}"]`);
       if (el) el.style.setProperty('--dwell-progress', String(r));
@@ -276,9 +438,20 @@ function rebuild() {
         document.querySelector(`[data-dwell-target="${id}"]`)?.classList.remove('ra-spent');
       }
     },
-    onActivate: () => {},
-    onAdapt: (ms, meta) => log(`ADAPT dwell ${meta.from}ms → ${ms}ms`),
+    onAdapt: (ms, meta) => {
+      log(`ADAPT dwell ${meta.from}ms → ${ms}ms${remember ? ' (saved on this device)' : ''}`);
+      syncDwellControl();
+    },
   });
+
+  // A stored calibration wins; otherwise carry the slider's value across the
+  // rebuild, as a mode switch always has.
+  if (Math.round(dwell.dwellMs) !== DWELL_DEFAULT_MS) {
+    log(`RESTORED dwell ${Math.round(dwell.dwellMs)}ms from this device`);
+  } else if (carried !== DWELL_DEFAULT_MS) {
+    dwell.setDwell(carried);
+  }
+  syncDwellControl();
 
   const common = {
     onActivate: (id, meta) => activate(id, meta),
@@ -353,6 +526,54 @@ pauseBtn.addEventListener('click', () => {
 });
 adaptiveBox.addEventListener('change', () => { dwell.adaptive = adaptiveBox.checked; });
 
+speakBtn.addEventListener('click', async () => {
+  if (speakOn) {
+    speakOn = false;
+    hush();
+    speakBtn.setAttribute('aria-pressed', 'false');
+    feedbackStatus.textContent = 'Speech off.';
+    log('SPEECH off');
+    return;
+  }
+  try {
+    await loadVoice();
+  } catch (err) {
+    // Say why, rather than leaving a toggle that silently does nothing.
+    feedbackStatus.textContent = `Speech is unavailable: ${err.message || 'the voice could not load'}.`;
+    log('SPEECH unavailable');
+    return;
+  }
+  speakOn = true;
+  speakBtn.setAttribute('aria-pressed', 'true');
+  feedbackStatus.textContent = 'Speech on: each target is read aloud once it has focus.';
+  log('SPEECH on — labels come from onFocus, the voice from read-along');
+});
+
+rememberBtn.addEventListener('click', () => {
+  remember = !remember;
+  rememberBtn.setAttribute('aria-pressed', String(remember));
+  if (!remember) {
+    // Off means nothing is kept: delete what was stored, not merely stop
+    // updating it.
+    try { localStorage.removeItem(STORE_KEY); } catch { /* nothing to delete */ }
+  }
+  // A new engine is the only way to apply `persist` — it is read at
+  // construction, which is also when a stored value is restored.
+  rebuild();
+  feedbackStatus.textContent = remember
+    ? `Remembering the dwell duration on this device (now ${Math.round(dwell.dwellMs)}ms).`
+    : 'Not remembering. Nothing is stored on this device.';
+  log(remember ? 'REMEMBER on — the duration is saved when it changes' : 'REMEMBER off — stored value deleted');
+});
+
+document.getElementById('reset-btn').addEventListener('click', () => {
+  dwell.resetCalibration();
+  syncDwellControl();
+  updateStats();
+  feedbackStatus.textContent = `Calibration reset to ${DWELL_DEFAULT_MS}ms${remember ? ' and the stored value deleted' : ''}.`;
+  log(`RESET calibration → ${DWELL_DEFAULT_MS}ms${remember ? ', stored value deleted' : ''}`);
+});
+
 const modeButtons = {
   pointer: document.getElementById('m-pointer'),
   switch: document.getElementById('m-switch'),
@@ -364,8 +585,8 @@ for (const [name, btn] of Object.entries(modeButtons)) {
     for (const [n, b] of Object.entries(modeButtons)) b.setAttribute('aria-pressed', String(n === name));
     document.getElementById('mode-hint').textContent = {
       pointer: 'Rest the pointer on a word until the amber fill completes.',
-      switch: 'Auto-scan is running. Press Space or Enter to select the highlighted target.',
-      keyboard: 'Use arrows or Tab to move, Enter to select.',
+      switch: 'Auto-scan is running. Press Space or Enter to select the highlighted target. If you tabbed to a button, the key operates that button instead.',
+      keyboard: 'Use the arrow keys to move and Enter to select. Tab still moves between the page controls and the surfaces.',
     }[name];
     rebuild();
   });

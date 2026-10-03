@@ -106,6 +106,19 @@ jobs:
           const rep: MeasureReport = c.report({ denominator: DENOMINATORS.ACTIVE });
           const perHour: number | null = rep.falsePerHour;
           void [perHour, rep.witnessed, classifyActivation({ tMs: 0 }).basis, OUTCOMES.TRUE];
+
+          // Speak-on-focus and opt-in persistence (0.5.0).
+          let live = 0;
+          const spoken = new DwellEngine({
+            persist: 'app:dwell', storage: null,
+            labelOf: (id) => (id === 'yes' ? 'Yes please' : undefined),
+            onFocus: (id, label, info) => { live = info.seq; void [id, label, info.via]; },
+            onBlur: (_id, info) => { if (info.seq === live) live = 0; },
+          });
+          spoken.focus('yes', 0);
+          spoken.resetCalibration();
+          const focused: string | null = spoken.focused;
+          void focused;
           TS
           ./node_modules/.bin/tsc --noEmit --strict --target es2022             --module esnext --moduleResolution bundler consumer.ts
 
@@ -128,6 +141,10 @@ jobs:
           classifyActivation({ tMs: 0 }, { intentionalHoldMs: '400' });
           const bad: string = c.report().falsePerHour!;           // number|null
           void bad;
+
+          // A persist flag is a key, not a switch; a label is always a string.
+          new DwellEngine({ persist: true });
+          new DwellEngine({ onFocus: (id: string, label: number) => void [id, label] });
           TS
           if ./node_modules/.bin/tsc --noEmit --strict --target es2022                --module esnext --moduleResolution bundler misuse.ts 2>/dev/null; then
             echo "FAIL: misuse compiled — the types do not enforce the API"

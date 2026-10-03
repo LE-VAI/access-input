@@ -63,7 +63,21 @@
  * clock-gap guard and abort valid dwells. If a source reports its own times,
  * inject the host clock into it so both agree, or call rebaseline() after
  * switching.
+ *
+ * SPEAK-ON-FOCUS (auditory feedback). onFocus(id, label) tells the host that
+ * a target has genuinely acquired focus, so it can speak the label. The
+ * engine never speaks — this package has zero dependencies, and the host
+ * already owns a voice (Web Speech, a neural TTS, a recorded prompt set). The
+ * same gates that protect activation protect speech: a glance that never
+ * passes lock-on says nothing, and a slip inside the grace window does not
+ * repeat what was already said. See _announceFocus().
+ *
+ * CALIBRATION PERSISTENCE (opt-in). With `persist: '<key>'` the calibrated
+ * duration survives a reload, stored on the device only. See
+ * _restoreCalibration().
  */
+
+import { targetLabel } from './words.js';
 
 /** Progress callbacks are throttled — the UI ring does not need 60fps. */
 const PROGRESS_INTERVAL_MS = 50;
@@ -146,6 +160,32 @@ const MAX_DWELL_MS = 1500;
  */
 const CLOCK_GAP_MS = 250;
 
+/**
+ * Version of the stored calibration record. A record carrying any other
+ * version is ignored rather than migrated: a misread duration is an
+ * accidental activation waiting to happen, and starting from the host's
+ * configured value is always safe.
+ */
+const PERSIST_SCHEMA = 1;
+
+/**
+ * The storage a persisting engine writes to: the injected one if the host
+ * passed `storage` (null meaning "none"), else the browser's localStorage.
+ *
+ * Reading `localStorage` is itself an operation that can throw — a sandboxed
+ * iframe, blocked site data, some private modes — so even the lookup is
+ * guarded. No storage means persistence quietly does nothing; the session
+ * still works, it just will not be remembered.
+ */
+function resolveStorage(options) {
+  if (options.storage !== undefined) return options.storage;
+  try {
+    return globalThis.localStorage ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export class DwellEngine {
   /**
    * @param {object} [options]
@@ -161,6 +201,19 @@ export class DwellEngine {
    * @param {boolean} [options.leaveToRearm=true] require a departure before a
    *   fired target can fire again (see the class comment; disable only if the
    *   host implements its own repeat gating)
+   * @param {Function} [options.onFocus] (id, label, { tMs, seq, via }) — a
+   *   target genuinely acquired focus; speak `label` here
+   * @param {Function} [options.onBlur] (id, { tMs, seq, reason }) — the focus
+   *   announced under `seq` ended; cancel its speech here
+   * @param {Function} [options.labelOf] (id) => string — label resolver.
+   *   Default: the accessible name of the [data-dwell-target] element
+   *   (aria-label, then aria-labelledby, then text), else String(id)
+   * @param {string} [options.persist] storage key. When set, the calibrated
+   *   duration is restored on construction and saved when it changes. Off
+   *   unless the host passes a key.
+   * @param {object|null} [options.storage] getItem/setItem/removeItem store
+   *   for `persist`. Defaults to localStorage; pass one for tests or non-browser
+   *   hosts, or null for none.
    */
   constructor(options = {}) {
     this.dwellMs = options.dwellMs ?? 600;
@@ -178,6 +231,9 @@ export class DwellEngine {
     this.onCancel = options.onCancel || null;
     this.onAdapt = options.onAdapt || null;
     this.onPhase = options.onPhase || null; // ('lockon'|'dwell'|null, id)
+    this.onFocus = options.onFocus || null; // (id, label, { tMs, seq, via })
+    this.onBlur = options.onBlur || null;   // (id, { tMs, seq, reason })
+    this.labelOf = typeof options.labelOf === 'function' ? options.labelOf : null;
 
     this._target = null;      // target id currently being dwelled
     this._enteredAt = 0;      // when the CURRENT run began (ms, host clock)
@@ -214,10 +270,40 @@ export class DwellEngine {
     this._lastDirection = 0;   // +1 lengthened, -1 shortened, 0 never adapted
     this._adaptations = 0;     // total corrections applied — for diagnostics
     this._eventsSinceAdapt = 0;
+
+    // Focus announcement. `_focusId` is the target the host was last told has
+    // focus; `_focusSeq` numbers each announcement, so an onBlur can name the
+    // exact onFocus it ends and a host with an asynchronous voice can discard
+    // speech that arrives after its focus has gone.
+    this._focusId = null;
+    this._focusSeq = 0;
+
+    // Calibration persistence. The configured values are captured BEFORE a
+    // stored record is applied, so resetCalibration() returns to what the host
+    // asked for, not to what the device happened to remember.
+    this._initial = {
+      dwellMs: this.dwellMs,
+      minDwellMs: this.minDwellMs,
+      maxDwellMs: this.maxDwellMs,
+    };
+    this._persistKey = typeof options.persist === 'string' && options.persist
+      ? options.persist
+      : null;
+    // Storage is not even looked up without a key: an engine that was not
+    // asked to persist must never touch the device's storage.
+    this._storage = this._persistKey ? resolveStorage(options) : null;
+    if (this._persistKey) this._restoreCalibration();
   }
 
   /** Target currently being dwelled, or null. */
   get target() { return this._target; }
+
+  /**
+   * The target the host was last told has focus (via onFocus), or null. Not
+   * the same as `target`: a glance still in lock-on has a target but no focus,
+   * and a scan highlight has focus but no dwell.
+   */
+  get focused() { return this._focusId; }
 
   /** Current phase: 'idle', 'lockon' (entry gate), or 'dwell' (progress). */
   get phase() { return this._phase; }
@@ -408,6 +494,35 @@ export class DwellEngine {
     this._lastDirection = 0;
     this._adaptations = 0;
     this._eventsSinceAdapt = 0;
+
+    // A user's explicit choice is exactly what persistence exists to keep.
+    this._saveCalibration();
+  }
+
+  /**
+   * Forget the calibration: clear the stored record (if `persist` is set) and
+   * return to the duration and adaptive bounds the engine was constructed
+   * with.
+   *
+   * This is the user's way out of a calibration that went wrong — an
+   * adaptation that walked somewhere uncomfortable, or a device someone else
+   * calibrated. Like setDwell(), it clears the adaptive history (so old
+   * outcomes cannot pull the restored value straight back) and leaves repeat
+   * gating alone (so a target that already fired is not re-armed under a
+   * signal that never left it).
+   */
+  resetCalibration() {
+    this.dwellMs = this._initial.dwellMs;
+    this.minDwellMs = this._initial.minDwellMs;
+    this.maxDwellMs = this._initial.maxDwellMs;
+    this._outcomes = [];
+    this._lastDirection = 0;
+    this._adaptations = 0;
+    this._eventsSinceAdapt = 0;
+    if (!this._persistKey || !this._storage) return;
+    try {
+      this._storage.removeItem(this._persistKey);
+    } catch { /* storage that cannot be written cannot hold a stale record either */ }
   }
 
   /**
@@ -428,6 +543,9 @@ export class DwellEngine {
       this._leftAt = null;
       this.onCancel?.(id, { reason: 'paused', progress: 0 });
     }
+    // A paused engine has no focus: speech describing a target the engine is
+    // ignoring would tell the user the interface is still listening.
+    this._blurFocus(null, 'paused');
     this.onPhase?.(null, null);
   }
 
@@ -492,6 +610,36 @@ export class DwellEngine {
     this._lastHeartbeatAt = tMs;
     this._phase = this.lockOnMs > 0 ? 'lockon' : 'dwell';
     this.onPhase?.(this._phase, targetId);
+    // With lock-on disabled there is no gate to pass, so the dwell — and the
+    // focus — begin on entry. That is the host's choice: lockOnMs: 0 means
+    // every arrival counts.
+    if (this._phase === 'dwell') this._announceFocus(targetId, tMs, 'dwell');
+  }
+
+  /**
+   * Report a focus move from a source that does NOT dwell — a switch scan
+   * stepping its highlight, a keyboard arrow, an external device naming a
+   * target. SignalBridge calls this for direct sources; a host driving the
+   * engine by hand may too.
+   *
+   * There is no glance to filter: a scan step is a deliberate move, so
+   * onFocus fires at once — auditory scanning, the standard AAC feature for a
+   * user who cannot see the highlight well. Re-reporting the target that
+   * already has focus says nothing new. `null` means focus went nowhere.
+   *
+   * Never starts, advances, or cancels a dwell: a direct source's select IS
+   * the choice (see SignalBridge).
+   *
+   * @param {string|null} targetId
+   * @param {number} [tMs]
+   */
+  focus(targetId, tMs) {
+    if (this._paused) return;
+    if (targetId === null || targetId === undefined) {
+      this._blurFocus(tMs, 'left');
+      return;
+    }
+    this._announceFocus(targetId, tMs, 'direct');
   }
 
   /**
@@ -533,6 +681,10 @@ export class DwellEngine {
       this._phase = 'idle';
       this._accumulatedMs = 0;
       this._leftAt = null;
+      // The focus ends with the attempt. On return the target has to be
+      // acquired again — otherwise the host would still be describing a
+      // target the user may not even be looking at any more.
+      if (this._focusId === id) this._blurFocus(tMs, 'clock-gap');
       if (wasSpent) {
         this._spent.delete(id); // a gap is a departure: re-arm
         this.onPhase?.(null, null);
@@ -572,6 +724,12 @@ export class DwellEngine {
         this._enteredAt = tMs;
         this._lastHeartbeatAt = tMs;
         this.onPhase?.('dwell', this._target);
+        // THIS is the moment focus is acquired: the signal has stayed long
+        // enough to count as a stare. Announcing at entry instead would speak
+        // every word a gaze sweep crosses — the exact noise lock-on exists to
+        // remove — and speech is far more intrusive than a ring that does not
+        // paint.
+        this._announceFocus(this._target, tMs, 'dwell');
       }
       return;
     }
@@ -615,7 +773,12 @@ export class DwellEngine {
 
   /** Explicit cancel (an escape gesture, a mode change, a lost signal). */
   cancel(reason = 'explicit') {
-    if (this._target === null) return;
+    if (this._target === null) {
+      // Nothing is dwelling, but a scan highlight may still hold focus — a
+      // cancel (an escape, a stopped bridge, withdrawn consent) ends it too.
+      this._blurFocus(null, reason);
+      return;
+    }
     const id = this._target;
     const wasSpent = this._phase === 'spent';
     this._target = null;
@@ -625,6 +788,7 @@ export class DwellEngine {
     this.onPhase?.(null, null);
     // A deliberate cancel is also a departure — the target re-arms.
     if (wasSpent) this._spent.delete(id);
+    this._blurFocus(null, reason);
     this.onCancel?.(id, { reason, progress: 0 });
   }
 
@@ -723,6 +887,10 @@ export class DwellEngine {
     this._leftAt = null;
     this._accumulatedMs = 0;
 
+    // The visit is over, so is its focus. A slip that came back inside the
+    // grace window never reaches here — that is why a slip is not re-spoken.
+    if (this._focusId === id) this._blurFocus(tMs, reason);
+
     // The departure re-arms a spent target — this is leave-to-rearm.
     if (wasSpent) {
       this._spent.delete(id);
@@ -746,6 +914,120 @@ export class DwellEngine {
     if (tMs - this._lastProgressAt < PROGRESS_INTERVAL_MS) return;
     this._lastProgressAt = tMs;
     this.onProgress(this._target, Math.min(1, elapsed / this.dwellMs));
+  }
+
+  /**
+   * Tell the host a target acquired focus — once per acquisition.
+   *
+   * THE ONE-ANNOUNCEMENT RULE. A dwell target is announced when its lock-on
+   * completes, and stays announced for the rest of the visit: a grace-window
+   * slip that comes back, the activation itself, a spent target being held, a
+   * repeat target re-firing, a fresh dwell cycle with leaveToRearm off — none
+   * of them re-announce. Hearing the same word again every time the engine
+   * changes internal state would make speech unusable precisely for the users
+   * whose signal is noisiest. Only the end of the visit (onBlur) clears it.
+   *
+   * Every onFocus is ended by exactly one onBlur carrying the same `seq`, and
+   * that onBlur always arrives before the next onFocus. That pairing is the
+   * contract a host relies on to
+   * cancel or replace speech: cancel on onBlur and speak on onFocus, and
+   * speech can never describe a target the user has left.
+   */
+  _announceFocus(id, tMs, via) {
+    if (this._focusId === id) return;
+    this._blurFocus(tMs, 'replaced');
+    this._focusId = id;
+    this._focusSeq++;
+    // The label is resolved only when someone is listening — the default
+    // resolver reads the DOM, and an engine nobody asked to speak should not.
+    if (!this.onFocus) return;
+    this.onFocus(id, this._labelFor(id), {
+      tMs: Number.isFinite(tMs) ? tMs : null,
+      seq: this._focusSeq,
+      via,
+    });
+  }
+
+  /** End the announced focus, if any. `reason` says why (see onBlur). */
+  _blurFocus(tMs, reason) {
+    if (this._focusId === null) return;
+    const id = this._focusId;
+    this._focusId = null;
+    this.onBlur?.(id, {
+      tMs: Number.isFinite(tMs) ? tMs : null,
+      seq: this._focusSeq,
+      reason,
+    });
+  }
+
+  /**
+   * The label for a target: the host's resolver, else the accessible name of
+   * its element, else String(id) — never empty, so a host never has to guard
+   * against speaking nothing.
+   *
+   * A resolver that throws falls back to the id instead of propagating: the
+   * label is resolved in the middle of hold(), and a broken resolver must not
+   * be able to stall the host's ticker and take dwell activation down with it.
+   */
+  _labelFor(id) {
+    const fallback = String(id);
+    let label;
+    try {
+      label = this.labelOf ? this.labelOf(id) : targetLabel(id);
+    } catch {
+      return fallback;
+    }
+    return typeof label === 'string' && label.trim() ? label.trim() : fallback;
+  }
+
+  /**
+   * Apply a stored calibration, if a valid one exists.
+   *
+   * WHAT IS STORED: `{ v, dwellMs }` and nothing else. The adaptive window,
+   * the session counts, and which targets fired describe one sitting, not the
+   * person — and nothing beyond what restores the duration should sit on a
+   * device unasked.
+   *
+   * WHAT IS TRUSTED: nothing. Storage is shared with every script on the
+   * origin and with whatever the user's browser does to it, so the record is
+   * validated (schema version, a finite positive number) and then CLAMPED to
+   * this engine's min/max bounds. A corrupt or tampered value must not be
+   * able to produce a 20ms dwell — that is a stream of activations the user
+   * never made. Anything that fails validation is ignored, and the engine
+   * starts from the host's configured duration.
+   *
+   * Loading never writes: an engine that only read the record leaves storage
+   * exactly as it found it.
+   */
+  _restoreCalibration() {
+    let raw;
+    try {
+      raw = this._storage?.getItem(this._persistKey);
+    } catch {
+      return;
+    }
+    if (typeof raw !== 'string') return;
+    let record;
+    try {
+      record = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    if (!record || typeof record !== 'object' || record.v !== PERSIST_SCHEMA) return;
+    const ms = record.dwellMs;
+    if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) return;
+    this.dwellMs = Math.min(this.maxDwellMs, Math.max(this.minDwellMs, ms));
+  }
+
+  /** Store the current duration. A no-op unless the host passed `persist`. */
+  _saveCalibration() {
+    if (!this._persistKey || !this._storage) return;
+    try {
+      this._storage.setItem(this._persistKey, JSON.stringify({
+        v: PERSIST_SCHEMA,
+        dwellMs: Math.round(this.dwellMs),
+      }));
+    } catch { /* quota, private mode, revoked access: the session still works */ }
   }
 
   /**
@@ -798,6 +1080,9 @@ export class DwellEngine {
       this._outcomes = [];
       this._eventsSinceAdapt = 0;
       this._adaptations++;
+      // Saved before onAdapt, so a host that reads storage in its handler
+      // sees the value it is being told about.
+      this._saveCalibration();
       this.onAdapt?.(Math.round(this.dwellMs), {
         from: Math.round(before),
         reason: this._lastDirection === 1 ? 'undos' : 'abandons',

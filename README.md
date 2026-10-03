@@ -71,6 +71,26 @@ Three details that make it usable rather than merely correct:
 - **Sweep rejection.** A signal merely passing across a target is normal for gaze and is not counted as a failed attempt, so it cannot skew the adaptation.
 - **Clock-gap guard.** If the host stops ticking (a hidden tab, machine sleep, a stalled device stream), the gap is NOT counted as dwell progress — the attempt is abandoned. Without this, resting on a word, switching tabs for ten seconds, and returning fires an activation the user never made.
 
+## Remembering a calibration (opt-in)
+
+An adapted duration is the engine's best estimate for one person on one device. Dropping it on every reload means they have to earn it again through a string of undos. Pass a storage key and it survives:
+
+```js
+const dwell = new DwellEngine({ dwellMs: 600, persist: 'my-app:dwell' });
+
+// Later, from a settings screen:
+dwell.resetCalibration();   // forget it, and go back to 600ms
+```
+
+- **Off unless you pass a key.** Without `persist`, storage is never read or written. The engine doesn't even look it up.
+- **On the device only**, in `localStorage`. For tests or non-browser hosts, pass `storage` (anything with `getItem`/`setItem`/`removeItem`), or `null` for none. Nothing is transmitted.
+- **Only the duration is stored**: `{ v: 1, dwellMs }`. The adaptive window, the session counts, and which targets fired describe one sitting, not the person.
+- **Never trusted.** On load the record is validated (schema version, a finite positive number) and clamped to the engine's `minDwellMs`/`maxDwellMs`. A corrupt or tampered value can't produce a 20ms dwell, which would be a stream of activations the user never made. Anything invalid is ignored.
+- **Storage can fail and the session still works.** Blocked site data, a sandboxed iframe, a full quota: every access is guarded, so the duration just isn't remembered.
+- **Saved when the duration changes**: when adaptation moves it, or `setDwell()` records a user's choice. A bare `dwell.dwellMs = x` is not saved. Loading never writes.
+
+If your UI lets someone choose a duration outside the default adaptive bounds (300–1500ms), pass `minDwellMs`/`maxDwellMs` that cover your control's range. Otherwise a restored choice is clamped back into the defaults. `resetCalibration()` also restores those bounds after `setDwell()` re-centred them, and it leaves repeat gating alone, as `setDwell()` does.
+
 ## Making content addressable
 
 An input layer is only useful if there is a target to land on. Screen readers have the accessibility tree; a dwell engine has nothing unless the words are individually addressable. `tagWords` turns a block of prose into addressable words **without changing how it looks or reads**:
@@ -98,6 +118,47 @@ Switch scanning follows the AAC platform consensus: the scan **pauses after a se
 
 `SignalBridge` wires a source to a `DwellEngine` and your handler. The one rule that matters: a **continuous** source dwells (position → dwell → activate); a **direct** source does not (its select already happened). Dwelling on a switch press would be nonsense. A host that knows its actual device can override with `mode: 'dwell' | 'direct'`, because the host knows the hardware and the class only knows the category.
 
+## Speak on focus
+
+Someone who can't see the highlight well needs to hear what has focus before choosing it: a person with low vision, a gaze user whose tracker hides the cursor, a switch user scanning a grid. `DwellEngine` reports it through `onFocus(id, label)`. It does not speak. This package has zero dependencies, and the host already owns a voice, so route the label to Web Speech, a neural TTS, or recorded prompts:
+
+```js
+const dwell = new DwellEngine({
+  dwellMs: 600,
+  onFocus: (id, label) => {
+    speechSynthesis.cancel();                                  // replace, don't queue
+    speechSynthesis.speak(new SpeechSynthesisUtterance(label));
+  },
+  onBlur: () => speechSynthesis.cancel(),                     // focus left: stop talking
+});
+new SignalBridge({ source, dwell, onActivate: (id) => choose(id) });
+```
+
+When it fires is the whole design. It follows the same gates that protect activation:
+
+- **Dwell: when lock-on completes**, not when the signal arrives. A glance that never locks on says nothing. Speaking every word a gaze sweep crosses is exactly the noise lock-on exists to remove, and a voice is far more intrusive than a ring that doesn't paint.
+- **Once per acquisition.** A grace-window slip that comes back doesn't re-announce. Neither does the activation, holding a spent target, or a repeat target re-firing. Only leaving ends the focus.
+- **Scanning: on every highlight step.** `SignalBridge` routes a direct source's focus (a switch scan, arrow keys, an external device naming a target) into `dwell.focus()`, which announces it at once. A scan step is deliberate, so there's no glance to filter. This is auditory scanning, the standard AAC feature.
+- **Consent-gated.** Behind a consent gate nothing is announced while the grant is withheld, including a withdrawal that lands mid-lock-on.
+
+**Cancelling and replacing speech.** Every `onFocus` is ended by exactly one `onBlur` with the same `seq`, and it always arrives before the next `onFocus`. So speak on `onFocus`, cancel on `onBlur`, and speech never describes a target the user has left. `onBlur`'s `reason` says why: `'left'`, `'replaced'`, `'paused'`, `'clock-gap'`, or the reason given to `cancel()`. For an asynchronous voice, compare the `seq`:
+
+```js
+let live = 0;
+const dwell = new DwellEngine({
+  onFocus: async (id, label, { seq }) => {
+    live = seq;
+    const audio = await synthesize(label);   // a neural voice takes a moment
+    if (seq === live) audio.play();          // focus moved on meanwhile? drop it
+  },
+  onBlur: (id, { seq }) => { if (seq === live) live = 0; },
+});
+```
+
+**The label** comes from `labelOf(id)` if you pass one. Otherwise it's the accessible name of the `[data-dwell-target]` element (`aria-label`, then the `aria-labelledby` text, then its own text), or `String(id)` if there's no element. It's never empty. `targetLabel(id, root)` and `accessibleName(el)` are exported for building your own resolver. Pass a `root` when a page has more than one tagged surface, since `tagWords` numbers each one from `w0`; the read-along adapter scopes to its own element automatically.
+
+`SignalBridge`'s own `onFocus(id)` is a different signal: the raw position on every change, glances included, for painting a highlight. Use the engine's `onFocus` for speech.
+
 ## Why `ExternalSource` is the whole BCI story
 
 The thesis behind this package is that **the BCI software layer is accessibility software**, and that the useful thing to build is the timing/sync/input substrate rather than electrodes. `ExternalSource` is that claim made concrete: an EEG pipeline that can decide "focus" and "select" plugs in here **unchanged**, with no EEG-specific code in this package at all. The same is true of a BLE switch, a serial sip-puff sensor, or an eye-gaze bridge.
@@ -124,6 +185,8 @@ const host = new ReadAlongInputHost(document.querySelector('read-along'), {
 await host.start();
 ```
 
+`onFocus`, `onBlur`, `labelOf`, `persist` and `storage` pass straight through to the adapter's engine. The default label is the focused word, looked up inside that element only, so a switch user scanning the text hears each word before choosing where reading starts.
+
 ## Demo
 
 ```bash
@@ -132,6 +195,8 @@ python -m http.server 8795
 ```
 
 The demo switches live between pointer-dwell, single-switch auto-scan, and keyboard, over both a reading surface and a plain four-cell grid — to show the input layer does not care what the content is. Watch the amber ring fill as you rest on a word: that fill is the dwell, and the word activates when it completes.
+
+**Speak on focus** is off until you turn it on. It reads each acquired target aloud through read-along's Web Speech engine: after lock-on in pointer mode, on every highlight step in scan mode. **Remember dwell** keeps the calibrated duration on this device, and **Reset calibration** forgets it.
 
 ## TypeScript
 
@@ -277,7 +342,7 @@ An activation becomes a word-level seek; read-along's `activeToken` reports the 
 npm test
 ```
 
-31 tests, zero dependencies, `node:test`. The dwell engine takes an **injected clock** everywhere, so every timing assertion is about logic rather than wall-clock behaviour.
+194 tests, zero dependencies, `node:test`. The dwell engine takes an **injected clock** everywhere, so every timing assertion is about logic rather than wall-clock behaviour. Persistence tests inject their own storage, so the suite never touches a real one.
 
 ## API
 
@@ -292,13 +357,20 @@ new DwellEngine({
   adaptive,         // true
   leaveToRearm,     // true — a fired target must be LEFT before it can fire again
   onProgress, onActivate, onCancel, onAdapt, onPhase,
+  onFocus,          // (id, label, { tMs, seq, via }) — a target was ACQUIRED; speak here
+  onBlur,           // (id, { tMs, seq, reason }) — that focus ended; cancel speech here
+  labelOf,          // (id) => label — default: the target's accessible name, else String(id)
+  persist,          // storage key — opt-in calibration persistence (off without it)
+  storage,          // localStorage by default; inject for tests, null for none
 })
   .enter(targetId, tMs)   // signal arrived (or returned) on a target
   .hold(tMs)              // heartbeat while on target
   .leave(tMs)             // signal left; grace window begins
   .tick(tMs)              // host heartbeat to expire the grace window
   .cancel(reason)         // explicit cancel
+  .focus(targetId, tMs)   // a direct source moved focus (scan step) — announced at once
   .setDwell(ms)           // authoritative user choice (WCAG 2.2.1)
+  .resetCalibration()     // clear the stored calibration; back to the configured duration
   .pause() / .resume()    // global kill switch (all platforms ship one)
   .setRepeatTargets(ids)  // opt targets into timed auto-repeat (additive)
   .clearRepeatTargets(ids)      // remove specific registrations
@@ -309,6 +381,7 @@ new DwellEngine({
   .reportUndo()           // host: the user undid the last activation
   .isSpent(id)            // has this target fired and not yet been re-armed?
   .phase                  // 'idle' | 'lockon' | 'dwell' | 'spent'
+  .focused                // the target last announced via onFocus, or null
   .stats                  // { dwellMs, lockOnMs, activations, undos, abandons,
                           //   totalActivations, totalUndos, totalAbandons,
                           //   adaptations, lastDirection, windowSize, spent }
@@ -328,6 +401,8 @@ Time is always supplied by the caller (`performance.now()` in a browser, an inje
 splitWords(text)        // [{ text, start, end, index }]
 tagWords(el, opts)      // wrap words as dwell targets; returns the word list
 untagWords(el)          // restore the original DOM
+accessibleName(el)      // aria-label → aria-labelledby text → own text ('' if none)
+targetLabel(id, root)   // accessibleName of the target with that id, else String(id)
 ```
 
 ## License

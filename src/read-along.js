@@ -25,7 +25,7 @@
 
 import { DwellEngine } from './dwell.js';
 import { SignalBridge } from './sources.js';
-import { tagWords, TARGET_ATTR, WORD_CLASS } from './words.js';
+import { tagWords, targetLabel, TARGET_ATTR, WORD_CLASS } from './words.js';
 
 /**
  * Default dwell for word-by-word reading. 600ms is the evidence-based
@@ -55,6 +55,12 @@ export class ReadAlongInputHost {
    *   default seek behaviour (e.g. to log, or to drive something else)
    * @param {object} [options.consent] optional consent gate (see SignalBridge)
    * @param {string} [options.consentPurpose='acquire_signal']
+   * @param {Function} [options.onFocus] (id, label, info) — speak-on-focus;
+   *   see DwellEngine. The label defaults to the focused word's text.
+   * @param {Function} [options.onBlur] (id, info)
+   * @param {Function} [options.labelOf] (id) => string
+   * @param {string} [options.persist] storage key for the calibrated dwell
+   * @param {object|null} [options.storage] store for `persist`
    */
   constructor(el, options = {}) {
     this.el = el;
@@ -68,6 +74,14 @@ export class ReadAlongInputHost {
       adaptive: options.adaptive !== false,
       onAdapt: options.onAdapt || null,
       onPhase: options.onPhase || null,
+      onFocus: options.onFocus || null,
+      onBlur: options.onBlur || null,
+      // The default label lookup is scoped to THIS element. tagWords numbers
+      // every surface's words from w0, so a document-wide lookup on a page
+      // with two readers would speak the first reader's word for the second.
+      labelOf: options.labelOf || ((id) => targetLabel(id, this.el)),
+      persist: options.persist,
+      storage: options.storage,
     });
 
     this.bridge = new SignalBridge({

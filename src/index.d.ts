@@ -16,9 +16,18 @@
 export interface DwellStats {
   dwellMs: number;
   lockOnMs: number;
+  /** Counts inside the current adaptive window. */
   activations: number;
   undos: number;
   abandons: number;
+  /** Session totals, separate from the windowed figures above. */
+  totalActivations: number;
+  totalUndos: number;
+  totalAbandons: number;
+  adaptations: number;
+  /** Direction of the last adaptation: -1 shorter, 1 longer, 0 none yet. */
+  lastDirection: number;
+  windowSize: number;
   spent: number;
 }
 
@@ -42,6 +51,43 @@ export interface DwellActivateMeta {
 export interface DwellCancelMeta {
   reason: string;
   progress: number;
+}
+
+/**
+ * Passed to onFocus. `seq` numbers the announcement: the onBlur that ends it
+ * carries the same value, and a host with an asynchronous voice compares it
+ * before playing, so speech that arrives late never describes a target the
+ * user has already left.
+ */
+export interface DwellFocusInfo {
+  /** When focus was acquired, on the caller's clock; null if no time was supplied. */
+  tMs: number | null;
+  seq: number;
+  /**
+   * 'dwell' — a continuous source passed the lock-on gate (a glance never does).
+   * 'direct' — a scan step, an arrow key, or an external device naming a target.
+   */
+  via: 'dwell' | 'direct';
+}
+
+/** Passed to onBlur. Every onFocus is ended by exactly one onBlur with the same `seq`. */
+export interface DwellBlurInfo {
+  tMs: number | null;
+  seq: number;
+  /**
+   * Why the focus ended: 'left' (signal departed past the grace window, or a
+   * source reported no target), 'replaced' (another target), 'paused',
+   * 'clock-gap', or the reason given to cancel() — e.g. 'escape', 'stopped',
+   * 'consent-withdrawn'.
+   */
+  reason: string;
+}
+
+/** The subset of the Web Storage API that persistence uses. */
+export interface DwellStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
 }
 
 export interface DwellOptions {
@@ -71,6 +117,34 @@ export interface DwellOptions {
   onCancel?: (targetId: string | null, meta: DwellCancelMeta) => void;
   onAdapt?: (dwellMs: number, meta: { from: number }) => void;
   onPhase?: (phase: DwellPhase | null, targetId: string | null) => void;
+  /**
+   * Speak-on-focus: a target GENUINELY acquired focus — lock-on passed (a
+   * glance never fires this), or a direct source's scan step. Fires once per
+   * acquisition: grace-window slips, activation, and repeat fires do not
+   * repeat it. The package never speaks; route `label` to any TTS engine.
+   * Not to be confused with SignalBridgeOptions.onFocus, which reports raw
+   * position (glances included) for painting.
+   */
+  onFocus?: (targetId: string, label: string, info: DwellFocusInfo) => void;
+  /** The focus announced under `info.seq` ended — cancel its speech here. */
+  onBlur?: (targetId: string, info: DwellBlurInfo) => void;
+  /**
+   * Resolve a target id to the label passed to onFocus. Default: the
+   * accessible name of the [data-dwell-target] element (aria-label, then
+   * aria-labelledby, then text), else String(id). An empty result or a throw
+   * falls back to String(id).
+   */
+  labelOf?: (targetId: string) => string | null | undefined;
+  /**
+   * Opt-in calibration persistence: the storage key. When set, the calibrated
+   * duration is restored on construction (validated, clamped to
+   * minDwellMs..maxDwellMs) and saved when adaptation or setDwell() changes
+   * it. Stored on the device only, as `{ v, dwellMs }`. Without a key, storage
+   * is never touched.
+   */
+  persist?: string;
+  /** Store for `persist`. Defaults to localStorage; null for none. */
+  storage?: DwellStorage | null;
 }
 
 export declare class DwellEngine {
@@ -90,9 +164,17 @@ export declare class DwellEngine {
   onCancel: DwellOptions['onCancel'] | null;
   onAdapt: DwellOptions['onAdapt'] | null;
   onPhase: DwellOptions['onPhase'] | null;
+  onFocus: DwellOptions['onFocus'] | null;
+  onBlur: DwellOptions['onBlur'] | null;
+  labelOf: DwellOptions['labelOf'] | null;
 
   /** Target currently being dwelled, or null. */
   readonly target: string | null;
+  /**
+   * The target the host was last told has focus (via onFocus), or null. A
+   * glance still in lock-on has a `target` but no focus.
+   */
+  readonly focused: string | null;
   /** Current phase. */
   readonly phase: DwellPhase;
   /** True while the global pause is engaged. */
@@ -121,11 +203,23 @@ export declare class DwellEngine {
    * walked back — WCAG 2.2.1 requires the adjustment actually take effect.
    */
   setDwell(ms: number): void;
+  /**
+   * Clear the stored calibration (when `persist` is set) and return to the
+   * duration and adaptive bounds the engine was constructed with. Leaves
+   * repeat gating alone, like setDwell().
+   */
+  resetCalibration(): void;
 
   pause(): void;
   resume(): void;
 
   enter(targetId: string, tMs: number): void;
+  /**
+   * A non-dwelling source moved focus (scan step, arrow key, device). Fires
+   * onFocus at once — there is no glance to filter. Never starts a dwell.
+   * `null` ends the focus. SignalBridge calls this for direct sources.
+   */
+  focus(targetId: string | null, tMs?: number): void;
   hold(tMs: number): void;
   leave(tMs: number): void;
   tick(tMs: number): void;
@@ -219,9 +313,10 @@ export declare class SwitchSource extends InputSource {
 
 export declare class ExternalSource extends InputSource {
   constructor(options?: SourceOptions & { now?: () => number });
-  focus(targetId: string): void;
-  select(targetId: string): void;
-  cancel(reason?: string): void;
+  /** `tMs` defaults to the source clock; pass the device timestamp when you have one. */
+  focus(targetId: string, tMs?: number): void;
+  select(targetId: string, tMs?: number): void;
+  cancel(reason?: string, tMs?: number): void;
 }
 
 /**
@@ -236,6 +331,11 @@ export interface SignalBridgeOptions {
   source: InputSource;
   dwell: DwellEngine;
   onActivate?: (targetId: string, meta: DwellActivateMeta) => void;
+  /**
+   * Raw position, on every change — glances included. For painting. For
+   * speech use DwellOptions.onFocus, which the bridge feeds for both dwell and
+   * direct (scan) sources and gates on consent.
+   */
   onFocus?: (targetId: string | null) => void;
   onProgress?: (targetId: string | null, ratio: number) => void;
   onCancel?: (targetId: string | null, meta: DwellCancelMeta) => void;
@@ -442,6 +542,17 @@ export declare function splitWords(text: string): WordRecord[];
 /** Wrap every word as a dwell target. Preserves the text exactly — offsets must not shift. */
 export declare function tagWords(el: HTMLElement, options?: { onlyTextNodes?: boolean }): WordRecord[];
 export declare function untagWords(el: HTMLElement): void;
+/**
+ * The name to speak for an element: aria-label, then the aria-labelledby
+ * text, then its own text, whitespace collapsed. '' when it has none.
+ */
+export declare function accessibleName(el: Element): string;
+/**
+ * The accessible name of the element carrying data-dwell-target="<id>" under
+ * `root` (default: document), or String(id) when there is none. The default
+ * label resolver for onFocus.
+ */
+export declare function targetLabel(id: string, root?: ParentNode | null): string;
 
 // ---------------------------------------------------------------------------
 // read-along adapter
@@ -456,6 +567,12 @@ export interface ReadAlongInputHostOptions {
   onCancel?: SignalBridgeOptions['onCancel'];
   onAdapt?: DwellOptions['onAdapt'];
   onPhase?: DwellOptions['onPhase'];
+  /** Speak-on-focus; the label defaults to the focused word, scoped to this element. */
+  onFocus?: DwellOptions['onFocus'];
+  onBlur?: DwellOptions['onBlur'];
+  labelOf?: DwellOptions['labelOf'];
+  persist?: DwellOptions['persist'];
+  storage?: DwellOptions['storage'];
   consent?: ConsentGate | null;
   consentPurpose?: string;
 }

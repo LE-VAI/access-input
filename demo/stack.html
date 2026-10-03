@@ -4,7 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Reading with a consent gate — three libraries, one interface</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@designesy/read-along@0.1.3/src/read-along.css">
+<!-- Latest published read-along. Move this pin (and the one in the script) to 0.3.0 once that release ships. -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@designesy/read-along@0.2.3/src/read-along.css">
 <style>
   :root {
     --bg: #0b0c0f;
@@ -17,6 +18,10 @@
     --blocked: #ff453a;
     --ra-highlight: rgb(255 196 0 / 0.42);
     --ra-accent: #ffc400;
+    /* read-along's controls use the system Canvas/CanvasText colours, so the
+       page must declare it is dark or its status text renders black on this
+       background (measured 1.1:1). */
+    color-scheme: dark;
   }
   * { box-sizing: border-box; margin: 0; }
   body {
@@ -109,14 +114,24 @@
   /* When consent is withheld the surface is visibly inert — not merely
      non-functional. A user should be able to SEE that nothing is being read. */
   body[data-gated] .ra-dwell-word { background-image: none; outline: none; }
-  body[data-gated] read-along { opacity: 0.55; filter: saturate(0.4); }
+  /* Dim the WORDS, not the player. Reading aloud is not signal acquisition,
+     so the Listen control works while the input is gated and must not look
+     disabled — and dimming the whole element took its status text to 3.9:1.
+     The dimmed words still hold 5.6:1. */
+  body[data-gated] read-along > * { opacity: 0.55; filter: saturate(0.4); }
 
-  read-along { display: block; transition: opacity 180ms linear; }
+  read-along { display: block; }
+  read-along > * { transition: opacity 180ms linear; }
   .reading-text { font-size: 17.5px; line-height: 1.95; }
 
   .log {
     font: 12px/1.6 ui-monospace, monospace; color: var(--dim);
     max-height: 160px; overflow-y: auto; white-space: pre-wrap;
+  }
+  /* The event log scrolls, so it takes focus; the surface takes focus so a
+     keyboard or switch user has somewhere to stand that is not a button. */
+  .log:focus-visible, [data-surface]:focus-visible {
+    outline: 2px solid var(--amber); outline-offset: 4px; border-radius: 6px;
   }
   kbd {
     font: 11px ui-monospace, monospace; background: #23262c;
@@ -126,9 +141,26 @@
     position: absolute; width: 1px; height: 1px; margin: -1px;
     overflow: hidden; clip-path: inset(50%); white-space: nowrap;
   }
+
+  /* Page navigation + footer: landmarks a screen-reader user can jump to, and
+     a way between the demos that does not depend on the README. */
+  .demo-nav { display: flex; flex-wrap: wrap; gap: 4px 18px; margin-bottom: 28px;
+    font: 500 13px/1.4 ui-sans-serif, system-ui, sans-serif; }
+  .demo-nav a, .demo-footer a { color: inherit; text-underline-offset: 0.18em;
+    display: inline-flex; align-items: center; min-height: 24px; }
+  .demo-nav a[aria-current="page"] { font-weight: 700; text-decoration: none; }
+  .demo-nav a:focus-visible, .demo-footer a:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; border-radius: 2px; }
+  .demo-footer { margin-top: 36px; font: 13px/1.6 ui-sans-serif, system-ui, sans-serif; }
 </style>
 </head>
 <body data-gated>
+<nav class="demo-nav" aria-label="access-input demos">
+  <a href="index.html">Dwell &amp; scan</a>
+  <a href="read-along.html">Read-along integration</a>
+  <a href="stack.html" aria-current="page">Consent-gated stack</a>
+  <a href="analog.html">Biosignal pipeline</a>
+</nav>
+<main>
 <p class="eyebrow">Three libraries · one interface · all published</p>
 <h1>Reading with a consent gate</h1>
 <p class="sub">The full stack running at once. A signal source drives the reading surface, and a
@@ -176,12 +208,14 @@ that is the claim, and you can verify it in your network panel.</p>
 </div>
 
 <div class="panel">
-  <h2>Reading surface — the real component</h2>
+  <h2 id="reader-h">Reading surface — the real component</h2>
+  <div data-surface tabindex="0" role="group" aria-labelledby="reader-h">
   <read-along id="reader" rate="0.95" seekable>
     <h3 style="font-size:19px;margin-bottom:10px">Reading, for people who need the words to keep up</h3>
     <p class="reading-text">Reading while listening helps because the eye and the ear reinforce each other. The words stay visible while the voice moves through them. For a reader who needs support, that pairing is not a convenience — it is the difference between finishing the page and giving up on it.</p>
     <p class="reading-text">What has been missing is a way to reach it without a mouse. Rest on a word and the reading begins there.</p>
   </read-along>
+  </div>
 </div>
 
 <div class="panel">
@@ -190,10 +224,17 @@ that is the claim, and you can verify it in your network panel.</p>
 </div>
 
 <div class="panel">
-  <h2>Event log</h2>
-  <div class="log" id="log"></div>
+  <h2 id="log-h">Event log</h2>
+  <div class="log" id="log" tabindex="0" role="region" aria-labelledby="log-h"></div>
 </div>
 <p class="visually-hidden" id="live" aria-live="polite"></p>
+</main>
+<footer class="demo-footer">
+  access-input · MIT licensed · zero dependencies ·
+  <a href="https://github.com/LE-VAI/access-input">Source on GitHub</a> ·
+  <a href="https://www.npmjs.com/package/access-input">npm</a>
+</footer>
+
 
 <script type="module">
 // Three independently published packages, loaded from their CDNs. The demo runs
@@ -203,7 +244,30 @@ import { DwellEngine, SignalBridge, PointerSource, SwitchSource, KeyboardSource,
   from 'https://cdn.jsdelivr.net/npm/access-input@0.1.4/src/index.js';
 import { ConsentManager, PURPOSES, noticeVersion }
   from 'https://cdn.jsdelivr.net/npm/neural-consent@0.1.0/src/index.js';
-await import('https://cdn.jsdelivr.net/npm/@designesy/read-along@0.1.3/src/read-along.js');
+// Latest published read-along. Move this pin to 0.3.0 once that release ships.
+await import('https://cdn.jsdelivr.net/npm/@designesy/read-along@0.2.3/src/read-along.js');
+
+/**
+ * KEY ROUTING. The switch and keyboard sources listen on `window`, the way a
+ * dedicated switch would, so a Space or Enter pressed ON a button would be
+ * taken as a switch press and the button would never activate — on this page
+ * that includes Grant and Withdraw, so in scan mode a keyboard user could not
+ * withdraw consent. A key pressed on a control stays with that control,
+ * unless the pointer put focus there (a visitor who clicks a mode button and
+ * then presses Space means "switch"). Tab always moves page focus, or keyboard
+ * mode would trap a keyboard user on the surface. Escape always reaches the
+ * source. composedPath() sees inside read-along's shadow root.
+ */
+const CONTROLS = 'button, input, select, textarea, a[href], [contenteditable]';
+const controlOf = (ev) => ev.composedPath?.()[0]?.closest?.(CONTROLS) ?? null;
+let pointerControl = null;
+window.addEventListener('pointerdown', (ev) => { pointerControl = controlOf(ev); }, true);
+window.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape') return;
+  if (ev.key === 'Tab') { pointerControl = null; ev.stopPropagation(); return; }
+  const control = controlOf(ev);
+  if (control && control !== pointerControl) ev.stopPropagation();
+}, true);
 
 const reader = document.getElementById('reader');
 const logEl = document.getElementById('log');
@@ -431,8 +495,8 @@ const modeButtons = {
 };
 const hints = {
   pointer: 'Rest the pointer on a word until the amber fill completes — the reading starts from that word.',
-  switch: 'Auto-scan is running. Press Space to choose, then Space again to pick the word.',
-  keyboard: 'Use arrows or Tab to move, Enter to select. Home/End jump to the ends.',
+  switch: 'Auto-scan is running. Press Space to choose, then Space again to pick the word. If you tabbed to a button, the key operates that button instead.',
+  keyboard: 'Use the arrow keys to move, Enter to select. Home/End jump to the ends. Tab still moves between the page controls and the surface.',
   external: 'A device outside the page drives it: focus, select, cancel. This is the BCI/EMG path.',
 };
 for (const [name, btn] of Object.entries(modeButtons)) {

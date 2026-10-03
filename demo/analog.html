@@ -15,6 +15,9 @@
     --ok: #34c759;
     --no: #ff453a;
     --trace: #4a9eff;
+    /* A dark page must say so, or native controls and focus rings render for
+       a light one on top of it. */
+    color-scheme: dark;
   }
   * { box-sizing: border-box; margin: 0; }
   body {
@@ -69,13 +72,32 @@
     border-color: var(--ok); color: var(--ok);
   }
   .events { font: 12px/1.7 ui-monospace, monospace; color: var(--dim); max-height: 130px; overflow-y: auto; white-space: pre-wrap; }
+  /* The press log scrolls, so a keyboard user must be able to focus it. */
+  .events:focus-visible { outline: 2px solid var(--amber); outline-offset: 4px; border-radius: 6px; }
   .key { color: var(--dim); font-size: 13px; }
   .legend { display: flex; gap: 16px; flex-wrap: wrap; font: 12px/1.6 ui-monospace, monospace; color: var(--dim); margin-top: 10px; }
   .swatch { display: inline-block; width: 22px; height: 2px; vertical-align: middle; margin-right: 5px; }
   .visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); }
+
+  /* Page navigation + footer: landmarks a screen-reader user can jump to, and
+     a way between the demos that does not depend on the README. */
+  .demo-nav { display: flex; flex-wrap: wrap; gap: 4px 18px; margin-bottom: 28px;
+    font: 500 13px/1.4 ui-sans-serif, system-ui, sans-serif; }
+  .demo-nav a, .demo-footer a { color: inherit; text-underline-offset: 0.18em;
+    display: inline-flex; align-items: center; min-height: 24px; }
+  .demo-nav a[aria-current="page"] { font-weight: 700; text-decoration: none; }
+  .demo-nav a:focus-visible, .demo-footer a:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; border-radius: 2px; }
+  .demo-footer { margin-top: 36px; font: 13px/1.6 ui-sans-serif, system-ui, sans-serif; }
 </style>
 </head>
 <body>
+<nav class="demo-nav" aria-label="access-input demos">
+  <a href="index.html">Dwell &amp; scan</a>
+  <a href="read-along.html">Read-along integration</a>
+  <a href="stack.html">Consent-gated stack</a>
+  <a href="analog.html" aria-current="page">Biosignal pipeline</a>
+</nav>
+<main>
 <p class="eyebrow">Open source · MIT · zero dependencies</p>
 <h1>From a noisy biosignal to one clean press</h1>
 <p class="sub">A muscle sensor or a sip-and-puff tube does not produce clicks — it produces a messy
@@ -119,11 +141,18 @@ interface fires while you rest, too timid and you cannot reach it at all. This i
 </div>
 
 <div class="panel">
-  <h2>Detected presses</h2>
-  <div class="events" id="events">(none yet)</div>
+  <h2 id="events-h">Detected presses</h2>
+  <div class="events" id="events" tabindex="0" role="region" aria-labelledby="events-h">(none yet)</div>
 </div>
 
 <p class="visually-hidden" id="live" aria-live="polite"></p>
+</main>
+<footer class="demo-footer">
+  access-input · MIT licensed · zero dependencies ·
+  <a href="https://github.com/LE-VAI/access-input">Source on GitHub</a> ·
+  <a href="https://www.npmjs.com/package/access-input">npm</a>
+</footer>
+
 
 <script type="module">
 import { ActivationDetector, ANALOG_DEFAULTS, median, mad, sigmaFromMad }

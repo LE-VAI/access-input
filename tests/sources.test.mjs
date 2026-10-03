@@ -583,3 +583,87 @@ test('SWITCH: pauseScan and resumeScan control the timer', () => {
   assert.equal(src.scanning, false, 'stop releases the timer');
   assert.deepEqual(states, [false, true]);
 });
+
+// -- PointerSource: leaving the root ------------------------------------------
+
+/**
+ * A minimal DOM for PointerSource: one word target at (0,0)-(50,20) inside a
+ * root that records its listeners, and a manual frame queue standing in for
+ * requestAnimationFrame so each sample happens exactly when the test says.
+ */
+function pointerHarness() {
+  const word = {
+    getAttribute: () => 'w1',
+    closest() { return this; },
+    getBoundingClientRect: () => ({ left: 0, top: 0, right: 50, bottom: 20, width: 50, height: 20 }),
+  };
+  const listeners = {};
+  const root = {
+    addEventListener: (type, fn) => { listeners[type] = fn; },
+    removeEventListener: (type) => { delete listeners[type]; },
+    contains: () => true,
+    querySelector: () => word,
+  };
+  const frames = [];
+  const saved = { document: globalThis.document, raf: globalThis.requestAnimationFrame };
+  globalThis.document = { elementFromPoint: (x, y) => (x >= 0 && x <= 50 && y >= 0 && y <= 20 ? word : null) };
+  globalThis.requestAnimationFrame = (fn) => { frames.push(fn); return frames.length; };
+  const frame = () => { const fn = frames.shift(); fn?.(); };
+  const restore = () => {
+    if (saved.document === undefined) delete globalThis.document; else globalThis.document = saved.document;
+    if (saved.raf === undefined) delete globalThis.requestAnimationFrame; else globalThis.requestAnimationFrame = saved.raf;
+  };
+  return { root, listeners, frame, restore };
+}
+
+test('PointerSource reports a departure when the pointer leaves the root', async () => {
+  const h = pointerHarness();
+  try {
+    const { PointerSource } = await import('../src/sources.js');
+    let now = 0;
+    const src = new PointerSource(h.root, { now: () => now });
+    const seen = [];
+    src.onFocus = (id) => seen.push(id);
+    await src.start();
+    assert.equal(typeof h.listeners.pointerleave, 'function',
+      'without a pointerleave listener the last in-root position is never retired');
+    h.listeners.pointermove({ clientX: 10, clientY: 10 });
+    h.frame(); now = 16; h.frame();
+    assert.deepEqual(seen, ['w1', 'w1'], 'a resting pointer keeps reporting its target');
+    h.listeners.pointerleave();
+    assert.equal(seen.at(-1), null, 'leaving the root must report "no target"');
+    const after = seen.length;
+    h.frame(); h.frame();
+    assert.equal(seen.length, after, 'and the stale position must not be sampled again');
+    src.stop();
+  } finally {
+    h.restore();
+  }
+});
+
+test('a dwell is not completed on a word the pointer left by exiting the root', async () => {
+  // The field failure, end to end: rest 448ms (past lock-on, short of dwell),
+  // move straight off the root, keep the host heartbeat running. Before the
+  // fix the word activated at ~750ms with the pointer nowhere near it.
+  const h = pointerHarness();
+  try {
+    const { PointerSource } = await import('../src/sources.js');
+    let now = 0;
+    const src = new PointerSource(h.root, { now: () => now });
+    const dwell = new DwellEngine({ dwellMs: 600, lockOnMs: 150, adaptive: false });
+    const activations = [];
+    new SignalBridge({ source: src, dwell, mode: 'dwell',
+      onActivate: (id) => activations.push(id) });
+    await src.start();
+    h.listeners.pointermove({ clientX: 10, clientY: 10 });
+    for (now = 0; now <= 448; now += 16) { h.frame(); dwell.hold(now); }
+    assert.equal(dwell.focused, 'w1', 'lock-on passed: the word has focus');
+    h.listeners.pointerleave();
+    for (; now <= 1500; now += 16) { h.frame(); dwell.hold(now); dwell.tick(now); }
+    assert.deepEqual(activations, [], 'nothing may activate after the pointer has gone');
+    assert.equal(dwell.focused, null, 'and the focus is released once the grace window passes');
+    src.stop();
+  } finally {
+    h.restore();
+  }
+});

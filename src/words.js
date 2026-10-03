@@ -139,3 +139,72 @@ export function untagWords(el) {
     parent.normalize();
   }
 }
+
+/**
+ * The name a person should HEAR for an element, in the order a screen reader
+ * would resolve it: aria-label, then the text of the aria-labelledby
+ * elements, then the element's own text.
+ *
+ * Deliberately a subset of the full accessible-name computation, not a
+ * re-implementation of it. The three steps cover what a dwell target actually
+ * is — a word span, a grid cell, a button — and every step beyond them (role
+ * rules, embedded controls, CSS-generated content) is a place for a homemade
+ * implementation to disagree with the platform. A host with richer targets
+ * passes its own `labelOf`.
+ *
+ * Whitespace is collapsed, because a speech engine reads a newline-and-indent
+ * from the markup as a pause the author never wrote.
+ *
+ * @param {Element} el
+ * @returns {string} the name, or '' when the element has none
+ */
+export function accessibleName(el) {
+  if (!el || typeof el.getAttribute !== 'function') return '';
+  const clean = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
+
+  const label = clean(el.getAttribute('aria-label'));
+  if (label) return label;
+
+  const refs = clean(el.getAttribute('aria-labelledby'));
+  if (refs) {
+    // Resolve the ids in the element's own tree, so a target inside a shadow
+    // root finds its labels there rather than in the outer document.
+    const root = el.getRootNode?.();
+    const scope = typeof root?.getElementById === 'function' ? root : el.ownerDocument;
+    const text = clean(refs.split(' ')
+      .map((id) => scope?.getElementById?.(id)?.textContent ?? '')
+      .join(' '));
+    if (text) return text;
+  }
+
+  return clean(el.textContent);
+}
+
+/**
+ * Resolve a target id to a speakable label: the accessible name of the
+ * element carrying `data-dwell-target="<id>"`, or `String(id)` when there is
+ * no such element (or no DOM at all — Node, SSR, a device-only host).
+ *
+ * Matches by comparing attributes rather than building a selector, so any id
+ * a host chose — quotes, brackets, spaces — resolves without escaping rules.
+ * It runs once per focus change, not per frame, so the linear scan is cheap
+ * even on a long page.
+ *
+ * Ids are only unique per tagged surface (tagWords numbers every element's
+ * words from w0), so a page with two surfaces should pass the surface as
+ * `root` — the read-along adapter does.
+ *
+ * @param {string} id
+ * @param {ParentNode} [root=document]
+ * @returns {string}
+ */
+export function targetLabel(id, root = typeof document !== 'undefined' ? document : null) {
+  const fallback = String(id);
+  if (!root || typeof root.querySelectorAll !== 'function') return fallback;
+  for (const el of root.querySelectorAll(`[${TARGET_ATTR}]`)) {
+    if (el.getAttribute(TARGET_ATTR) === fallback) {
+      return accessibleName(el) || fallback;
+    }
+  }
+  return fallback;
+}

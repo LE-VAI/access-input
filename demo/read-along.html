@@ -4,7 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Access input × read-along — driving a reading surface by switch, gaze, or key</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@designesy/read-along@0.1.2/src/read-along.css">
+<!-- Latest published read-along. Move this pin (and the two in the script) to 0.3.0 once that release ships. -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@designesy/read-along@0.2.3/src/read-along.css">
 <style>
   :root {
     --bg: #0b0c0f;
@@ -15,6 +16,10 @@
     --amber: #ffc400;
     --ra-highlight: rgb(255 196 0 / 0.42);
     --ra-accent: #ffc400;
+    /* read-along's controls use the system Canvas/CanvasText colours, so the
+       page must declare it is dark or its status text renders black on this
+       background (measured 1.15:1). */
+    color-scheme: dark;
   }
   * { box-sizing: border-box; margin: 0; }
   body {
@@ -79,15 +84,37 @@
     font: 12px/1.6 ui-monospace, monospace; color: var(--dim);
     max-height: 150px; overflow-y: auto; white-space: pre-wrap;
   }
+  /* The log scrolls, so it takes focus; the surface takes focus so a keyboard
+     or switch user has somewhere to stand that is not a button. */
+  .log:focus-visible, [data-surface]:focus-visible {
+    outline: 2px solid var(--amber); outline-offset: 4px; border-radius: 6px;
+  }
   .keymap kbd {
     font: 11px ui-monospace, monospace; background: #23262c;
     border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px;
   }
   .diagram { font: 12px/1.7 ui-monospace, monospace; color: var(--dim); }
   .diagram b { color: var(--amber); font-weight: 600; }
+
+  /* Page navigation + footer: landmarks a screen-reader user can jump to, and
+     a way between the demos that does not depend on the README. */
+  .demo-nav { display: flex; flex-wrap: wrap; gap: 4px 18px; margin-bottom: 28px;
+    font: 500 13px/1.4 ui-sans-serif, system-ui, sans-serif; }
+  .demo-nav a, .demo-footer a { color: inherit; text-underline-offset: 0.18em;
+    display: inline-flex; align-items: center; min-height: 24px; }
+  .demo-nav a[aria-current="page"] { font-weight: 700; text-decoration: none; }
+  .demo-nav a:focus-visible, .demo-footer a:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; border-radius: 2px; }
+  .demo-footer { margin-top: 36px; font: 13px/1.6 ui-sans-serif, system-ui, sans-serif; }
 </style>
 </head>
 <body>
+<nav class="demo-nav" aria-label="access-input demos">
+  <a href="index.html">Dwell &amp; scan</a>
+  <a href="read-along.html" aria-current="page">Read-along integration</a>
+  <a href="stack.html">Consent-gated stack</a>
+  <a href="analog.html">Biosignal pipeline</a>
+</nav>
+<main>
 <p class="eyebrow">Open source · MIT · two libraries, one interface</p>
 <h1>Driving a reading surface without a mouse</h1>
 <p class="sub">A person using a switch, a gaze tracker, or an EMG channel cannot click a word.
@@ -118,12 +145,15 @@ word and the reading starts from there. Neither library knows about the other's 
   <div class="row">
     <label class="status">Dwell <input id="dwell-range" type="range" min="100" max="1200" step="25" value="600" aria-label="Dwell time in milliseconds"> <span id="dwell-val">600ms</span></label>
     <button id="pause-btn" aria-pressed="false">Pause (kill switch)</button>
+    <button id="speak-btn" aria-pressed="false" aria-describedby="speak-note">Speak on focus</button>
   </div>
   <div class="row">
     <span class="status" id="stats">activations 0 · dwell 600ms</span>
     <span class="status" id="rakestate">read-along: idle</span>
   </div>
   <p class="hint" id="mode-hint">Rest the pointer on a word until the amber fill completes — the reading starts from that word.</p>
+  <p class="hint" id="speak-note">Speak on focus is off until you turn it on. It says each word once it has focus — after lock-on when dwelling, on every step when scanning — so a switch user can hear where the reading will start. It stays quiet while the reader itself is speaking.</p>
+  <p class="hint" id="speak-status" role="status"></p>
   <div class="row keymap" id="ext-controls" hidden>
     <span class="status">External device simulated:</span>
     <button id="ext-next">focus next word</button>
@@ -133,27 +163,38 @@ word and the reading starts from there. Neither library knows about the other's 
 </div>
 
 <div class="panel">
-  <h2>Reading surface — the actual component</h2>
+  <h2 id="reader-h">Reading surface — the actual component</h2>
+  <div data-surface tabindex="0" role="group" aria-labelledby="reader-h">
   <read-along id="reader" rate="0.95" seekable>
     <h3 style="font-size:19px;margin-bottom:10px">Reading, for people who need the words to keep up</h3>
     <p class="reading-text">Reading while listening helps because the eye and the ear reinforce each other. The words stay visible while the voice moves through them. For a reader who needs support, that pairing is not a convenience — it is the difference between finishing the page and giving up on it. The technique is well studied and the finding is consistent: comprehension improves most when the highlighting follows the voice word by word.</p>
     <p class="reading-text">What has been missing is a way to reach it without a mouse. Rest on a word and the reading begins there.</p>
   </read-along>
+  </div>
 </div>
 
 <div class="panel">
-  <h2>Event log</h2>
-  <div class="log" id="log"></div>
+  <h2 id="log-h">Event log</h2>
+  <div class="log" id="log" tabindex="0" role="region" aria-labelledby="log-h"></div>
 </div>
+</main>
+<footer class="demo-footer">
+  access-input · MIT licensed · zero dependencies ·
+  <a href="https://github.com/LE-VAI/access-input">Source on GitHub</a> ·
+  <a href="https://www.npmjs.com/package/access-input">npm</a>
+</footer>
+
 
 <script type="module">
-import { DwellEngine, SignalBridge, PointerSource, SwitchSource, KeyboardSource, ExternalSource, tagWords }
+import { DwellEngine, SignalBridge, PointerSource, SwitchSource, KeyboardSource, ExternalSource, tagWords, targetLabel }
   from '../src/index.js';
 import { ReadAlongInputHost } from '../src/read-along.js';
 
 // Load read-along from the CDN so this demo runs as a static page with no
 // build step — the two libraries are independently published.
-await import('https://cdn.jsdelivr.net/npm/@designesy/read-along@0.1.2/src/read-along.js');
+// Latest published read-along. Move this pin to 0.3.0 once that release ships.
+const READ_ALONG = 'https://cdn.jsdelivr.net/npm/@designesy/read-along@0.2.3';
+await import(`${READ_ALONG}/src/read-along.js`);
 
 const reader = document.getElementById('reader');
 const logEl = document.getElementById('log');
@@ -162,6 +203,8 @@ const raStateEl = document.getElementById('rakestate');
 const dwellRange = document.getElementById('dwell-range');
 const dwellVal = document.getElementById('dwell-val');
 const pauseBtn = document.getElementById('pause-btn');
+const speakBtn = document.getElementById('speak-btn');
+const speakStatus = document.getElementById('speak-status');
 const extControls = document.getElementById('ext-controls');
 
 const log = (msg) => {
@@ -171,6 +214,78 @@ const log = (msg) => {
 
 let host = null, source = null, bridge = null, mode = 'pointer';
 let external = null, extIndex = -1;
+
+/**
+ * KEY ROUTING. The switch and keyboard sources listen on `window`, the way a
+ * dedicated switch would, so a Space or Enter pressed ON a button — this
+ * page's or the reader's own Listen button — would be taken as a switch press
+ * and the button would never activate. A key pressed on a control stays with
+ * that control, unless the pointer put focus there (a visitor who clicks a
+ * mode button and then presses Space means "switch"). Tab always moves page
+ * focus, or keyboard mode would trap a keyboard user on the surface. Escape
+ * always reaches the source. composedPath() sees inside read-along's shadow
+ * root, where ev.target would only report the <read-along> host.
+ */
+const CONTROLS = 'button, input, select, textarea, a[href], [contenteditable]';
+const controlOf = (ev) => ev.composedPath?.()[0]?.closest?.(CONTROLS) ?? null;
+let pointerControl = null;
+window.addEventListener('pointerdown', (ev) => { pointerControl = controlOf(ev); }, true);
+window.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape') return;
+  if (ev.key === 'Tab') { pointerControl = null; ev.stopPropagation(); return; }
+  const control = controlOf(ev);
+  if (control && control !== pointerControl) ev.stopPropagation();
+}, true);
+
+/**
+ * SPEAK-ON-FOCUS, through read-along's own Web Speech engine (the same module
+ * instance the component uses — same URL). access-input only says WHAT has
+ * focus; the voice is the page's choice.
+ *
+ * ONE SPEECH CHANNEL. Every Web Speech utterance shares a single global queue,
+ * and the engine's stop() cancels all of it. So while the reader is playing
+ * or paused, focus speech stays silent and never calls stop(): speaking would
+ * queue behind (or inside) the reading, and stopping would cut the reading
+ * off. The reader's voice owns the channel whenever it is not idle.
+ */
+let voice = null;
+let speakOn = false;
+let talking = false;
+const readerQuiet = () => reader.state === 'idle';
+
+async function loadVoice() {
+  if (voice) return voice;
+  const { WebSpeechEngine } = await import(`${READ_ALONG}/src/engines/webspeech.js`);
+  if (!WebSpeechEngine.available) throw new Error('this browser has no Web Speech support');
+  // The engine takes speechSynthesis.onvoiceschanged for itself — and the
+  // reader's engine already did. Chain onto it rather than silently stealing
+  // the reader's voice-list updates.
+  const prior = speechSynthesis.onvoiceschanged;
+  voice = new WebSpeechEngine({
+    rate: 1.05,
+    onEnd: () => { talking = false; },
+    onMode: (m) => {
+      if (m === 'visual') log('speech: no voice answered — this browser may have none installed');
+    },
+  });
+  const own = speechSynthesis.onvoiceschanged;
+  if (prior && prior !== own) {
+    speechSynthesis.onvoiceschanged = (e) => { prior.call(speechSynthesis, e); own?.call(speechSynthesis, e); };
+  }
+  return voice;
+}
+
+function say(label) {
+  if (!voice || !readerQuiet()) return;
+  hush();
+  talking = true;
+  voice.speak([{ tokens: label.split(/\s+/).map((text, index) => ({ text, index })) }]);
+}
+
+function hush() {
+  if (voice && talking && readerQuiet()) voice.stop();
+  talking = false;
+}
 
 /**
  * ORDERING — the one subtle thing about this integration.
@@ -224,6 +339,15 @@ function rebuild() {
   const dwell = new DwellEngine({
     dwellMs: Number(dwellRange.value),
     lockOnMs: 150,
+    // Labels are looked up inside the reader only: tagWords numbers every
+    // surface's words from w0, so scoping is what keeps a second surface on
+    // the page from answering for this one.
+    labelOf: (id) => targetLabel(id, reader),
+    onFocus: (id, label, { via }) => {
+      log(`FOCUS "${label}" (${via === 'dwell' ? 'lock-on passed' : 'scan step'})`);
+      if (speakOn) say(label);
+    },
+    onBlur: () => { if (speakOn) hush(); },
     onProgress: (id, r) => {
       const el = reader.querySelector(`[data-dwell-target="${id}"]`);
       if (el) el.style.setProperty('--dwell-progress', String(r));
@@ -295,6 +419,9 @@ function rebuild() {
     const i = Number(String(id).replace(/^w/, ''));
     if (Number.isNaN(i) || !words[i]) return;
 
+    // The reading is about to take the speech channel; a label still being
+    // spoken would hold the first sentence back in the queue.
+    hush();
     if (reader.state !== 'playing') reader.play();
     requestAnimationFrame(() => {
       reader.seekToToken(i);
@@ -348,10 +475,32 @@ const modeButtons = {
 };
 const hints = {
   pointer: 'Rest the pointer on a word until the amber fill completes — the reading starts from that word.',
-  switch: 'Auto-scan is running. Press Space to choose, then Space again to pick the word.',
-  keyboard: 'Use arrows or Tab to move, Enter to select. Home/End jump to the ends.',
+  switch: 'Auto-scan is running. Press Space to choose, then Space again to pick the word. If you tabbed to a button, the key operates that button instead.',
+  keyboard: 'Use the arrow keys to move, Enter to select. Home/End jump to the ends. Tab still moves between the page controls and the surface.',
   external: 'A device outside the page drives it: focus, select, cancel. This is the BCI/EMG path.',
 };
+
+speakBtn.addEventListener('click', async () => {
+  if (speakOn) {
+    speakOn = false;
+    hush();
+    speakBtn.setAttribute('aria-pressed', 'false');
+    speakStatus.textContent = 'Speech off.';
+    log('SPEECH off');
+    return;
+  }
+  try {
+    await loadVoice();
+  } catch (err) {
+    speakStatus.textContent = `Speech is unavailable: ${err.message || 'the voice could not load'}.`;
+    log('SPEECH unavailable');
+    return;
+  }
+  speakOn = true;
+  speakBtn.setAttribute('aria-pressed', 'true');
+  speakStatus.textContent = 'Speech on: each word is said once it has focus, while the reader is idle.';
+  log('SPEECH on — labels come from onFocus, the voice from read-along');
+});
 for (const [name, btn] of Object.entries(modeButtons)) {
   btn.addEventListener('click', () => {
     mode = name;

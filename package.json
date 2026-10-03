@@ -1,6 +1,6 @@
 {
   "name": "access-input",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "description": "Input-abstraction substrate for assistive access: dwell activation, switch scanning, gaze/EMG/EEG-agnostic sources, and a read-along adapter. Zero dependencies.",
   "type": "module",
   "main": "src/index.js",
@@ -25,7 +25,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test tests/dwell.test.mjs tests/sources.test.mjs tests/words.test.mjs tests/analog.test.mjs tests/measure.test.mjs"
+    "test": "node --test tests/dwell.test.mjs tests/sources.test.mjs tests/words.test.mjs tests/analog.test.mjs tests/measure.test.mjs tests/focus.test.mjs tests/persist.test.mjs"
   },
   "keywords": [
     "accessibility",

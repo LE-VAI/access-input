@@ -16,7 +16,15 @@ export {
   SignalBridge,
 } from './sources.js';
 export { ReadAlongInputHost } from './read-along.js';
-export { tagWords, untagWords, splitWords, TARGET_ATTR, WORD_CLASS } from './words.js';
+export {
+  tagWords,
+  untagWords,
+  splitWords,
+  accessibleName,
+  targetLabel,
+  TARGET_ATTR,
+  WORD_CLASS,
+} from './words.js';
 export {
   AnalogSwitchSource,
 } from './analog-source.js';

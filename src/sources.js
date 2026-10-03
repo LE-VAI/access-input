@@ -199,10 +199,32 @@ export class PointerSource extends InputSource {
       if (!this._active) return;
       if (ev.key === 'Escape') this.onCancel?.('escape', this._now());
     };
+    /**
+     * The pointer left the root. pointermove only fires on the root while the
+     * pointer is over it, so a move straight from a word to anywhere outside
+     * the root leaves the last in-root position "current": the per-frame
+     * sample kept reporting the word the pointer had just left, and the dwell
+     * completed on a target nobody was pointing at. Found 2026-10-02 on the
+     * read-along integration, whose root is the reader: resting 450ms on a
+     * word, then moving onto the page heading, activated the word a second
+     * later and started the reader. A wrong activation is the failure this
+     * library exists to prevent.
+     */
+    const leave = () => {
+      if (!this._active) return;
+      this._x = null;
+      this._y = null;
+      if (this._lastId !== null) {
+        this._lastId = null;
+        this.onFocus?.(null, this._now());
+      }
+    };
 
-    this._handlers = { move, down, key };
+    this._handlers = { move, down, key, leave };
     this.root.addEventListener('pointermove', move, { passive: true });
     this.root.addEventListener('pointerdown', down);
+    this.root.addEventListener('pointerleave', leave);
+    this.root.addEventListener('pointercancel', leave);
     if (hasWindow) window.addEventListener('keydown', key);
   }
 
@@ -214,9 +236,11 @@ export class PointerSource extends InputSource {
     }
     this._raf = 0;
     if (!this._bound) return;
-    const { move, down, key } = this._handlers;
+    const { move, down, key, leave } = this._handlers;
     this.root?.removeEventListener('pointermove', move);
     this.root?.removeEventListener('pointerdown', down);
+    this.root?.removeEventListener('pointerleave', leave);
+    this.root?.removeEventListener('pointercancel', leave);
     if (hasWindow) window.removeEventListener('keydown', key);
     this._bound = false;
   }
@@ -742,7 +766,11 @@ export class SignalBridge {
    * @param {InputSource} options.source
    * @param {DwellEngine} options.dwell
    * @param {Function} options.onActivate (targetId, meta) — the app's handler
-   * @param {Function} [options.onFocus] (targetId|null) — for painting
+   * @param {Function} [options.onFocus] (targetId|null) — for painting. This
+   *   is where the signal IS, on every change, glances included. For speech,
+   *   use the DwellEngine's onFocus instead: it fires only once a target is
+   *   genuinely acquired (lock-on passed, or a scan step), and the bridge
+   *   routes direct-source focus into it.
    * @param {Function} [options.onProgress] (targetId, ratio)
    * @param {Function} [options.onCancel] (targetId, meta)
    * @param {'auto'|'dwell'|'direct'} [options.mode='auto'] how to interpret the
@@ -861,6 +889,38 @@ export class SignalBridge {
       this.onCancel?.(id, meta);
     };
 
+    /**
+     * SPEAK-ON-FOCUS IS GATED LIKE ACTIVATION. The engine announces focus from
+     * hold(), driven by the host's heartbeat rather than by a source event, so
+     * a withdrawal that lands mid-lock-on would otherwise still be followed by
+     * the user's target being spoken aloud — telling them the signal is being
+     * read after they said it may not be.
+     *
+     * A blocked announcement never happened as far as the host is concerned,
+     * so its onBlur is not forwarded either: the host sees strictly paired
+     * focus/blur, and never a retraction of something it was not told.
+     *
+     * Only installed when the engine has a focus handler to gate. An empty
+     * wrapper would make the engine resolve a label — a DOM read — for every
+     * acquisition with nobody listening. As with the other callbacks, set the
+     * engine's handlers before constructing the bridge.
+     */
+    const prevFocus = this.dwell.onFocus;
+    const prevBlur = this.dwell.onBlur;
+    this._announcedSeq = null;
+    if (prevFocus || prevBlur) {
+      this.dwell.onFocus = (id, label, info) => {
+        if (!this._consentAllows()) return;
+        this._announcedSeq = info.seq;
+        prevFocus?.(id, label, info);
+      };
+      this.dwell.onBlur = (id, info) => {
+        if (info.seq !== this._announcedSeq) return;
+        this._announcedSeq = null;
+        prevBlur?.(id, info);
+      };
+    }
+
     this._wireSource();
   }
 
@@ -947,6 +1007,12 @@ export class SignalBridge {
       if (continuous && !direct) {
         if (id === null) this.dwell.leave(this._timebase(tMs));
         else this.dwell.enter(id, this._timebase(tMs));
+      } else if (direct) {
+        // A direct source's focus is a scan step or a key press: deliberate,
+        // so the engine announces it at once instead of waiting out a lock-on
+        // gate (auditory scanning). Optional call, so a duck-typed engine
+        // without focus() still works as it did.
+        this.dwell.focus?.(id, this._timebase(tMs));
       }
     };
 
